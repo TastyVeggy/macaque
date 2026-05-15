@@ -16,6 +16,7 @@ env/
 venv/
 build/
 dist/
+compile_commands.json
 
 *.log
 *.jou
@@ -28,7 +29,6 @@ usage_statistics_webtalk.*
 vivado.php
 vivado_pid*.str
 
-# Bitstream and checkpoints
 *.bit
 *.bin
 *.dcp
