@@ -1,7 +1,11 @@
 package npu_pkg;
 
-  typedef logic signed [7:0] int8_t;
-  typedef logic signed [31:0] int32_t;
+  localparam int DATA_WIDTH = 8;
+  localparam int ACC_WIDTH = 32;
+
+  typedef logic signed [DATA_WIDTH-1:0] int8_t;
+  typedef logic signed [DATA_WIDTH*2-1:0] int16_t;
+  typedef logic signed [ACC_WIDTH-1:0] int32_t;
 
   localparam int SYS_CLK_FREQ = 50_000_000;
   localparam int UART_BAUD_DEFAULT = 115_200;

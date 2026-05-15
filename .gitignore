@@ -23,6 +23,7 @@ compile_commands.json
 *.str
 *.pb
 *.jou
+clockInfo.txt
 
 .Xil/
 usage_statistics_webtalk.*

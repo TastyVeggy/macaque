@@ -51,4 +51,4 @@ async def test_uart_echo(dut):
         assert received == sent, (
             f"Echo mismatch: sent 0x{sent:02X}, got 0x{received:02X}"
         )
-        dut._log.info(f"Echo OK: 0x{sent:02X}")
+        dut._log.info(f"Echo: PASS (0x{sent:02X} echoed)")

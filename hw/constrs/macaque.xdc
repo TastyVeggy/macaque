@@ -1,6 +1,6 @@
 set_property PACKAGE_PIN M21 [get_ports clk]
 set_property IOSTANDARD LVCMOS33 [get_ports clk]
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets clk_IBUF] 
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports clk]]
 create_clock -period 20.000 [get_ports clk]
 
 set_property PACKAGE_PIN F3 [get_ports rx_pin]
