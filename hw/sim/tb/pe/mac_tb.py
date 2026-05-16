@@ -9,10 +9,10 @@ PIPE_DEPTH = 3
 async def reset(dut):
     dut.rst.value = 1
     dut.weight_load.value = 0
-    dut.act_valid.value = 0
-    dut.clear_acc.value = 0
-    dut.act_in.value = 0
     dut.weight_in.value = 0
+    dut.input_valid.value = 0
+    dut.act_in.value = 0
+    dut.acc_in.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
@@ -22,6 +22,10 @@ def to_signed8(val):
     return val & 0xFF
 
 
+def to_signed32(val):
+    return val & 0xFFFFFFFF
+
+
 def from_signed32(val):
     val = int(val)
     if val >= (1 << 31):
@@ -29,18 +33,24 @@ def from_signed32(val):
     return val
 
 
-async def stream_activations(dut, activations):
-    """Stream activations and flush the pipeline with zeros."""
-    for act in activations:
+async def stream(dut, activations, accumulations):
+    """Stream activations and acc_ins together and flush pipeline with zeros."""
+    assert len(activations) == len(accumulations), (
+        "activations and acc_ins must be same length"
+    )
+
+    for act, acc in zip(activations, accumulations):
         dut.act_in.value = to_signed8(act)
-        dut.act_valid.value = 1
+        dut.acc_in.value = to_signed32(acc)
+        dut.input_valid.value = 1
         await RisingEdge(dut.clk)
     # keep valid high and then continue streaming zero so the last real product drains
     for _ in range(PIPE_DEPTH):
-        dut.act_in.value = to_signed8(0)
-        dut.act_valid.value = 1
+        dut.act_in.value = 0
+        dut.acc_in.value = 0
+        dut.input_valid.value = 1
         await RisingEdge(dut.clk)
-    dut.act_valid.value = 0
+    dut.input_valid.value = 0
 
 
 async def load_weight(dut, weight):
@@ -50,22 +60,13 @@ async def load_weight(dut, weight):
     dut.weight_load.value = 0
 
 
-async def clear_acc(dut):
-    """Assert clear_acc for one cycle. RSTP is synchronous so P clears
-    on the rising edge while clear_acc is high."""
-    dut.clear_acc.value = 1
-    await RisingEdge(dut.clk)
-    dut.clear_acc.value = 0
-    await RisingEdge(dut.clk)  # one extra cycle for P to settle to 0
-
-
 @cocotb.test()
-async def test_single_mac(dut):
-    """Single multiply-accumulate: weight=3, activation=4, expect 12"""
+async def test_single_multiply(dut):
+    """Single multiply: weight=3, act=4, acc_in=0 -> acc_out=12"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
     await load_weight(dut, 3)
-    await stream_activations(dut, [4])
+    await stream(dut, [4], [0])
 
     result = from_signed32(dut.acc_out.value)
     assert result == 12, f"Expected 12, got {result}"
@@ -73,28 +74,46 @@ async def test_single_mac(dut):
 
 
 @cocotb.test()
-async def test_dot_product(dut):
-    """Dot product of [1..14] with weight=3, expect 315"""
+async def test_single_mac(dut):
+    """Single multiply-accumulate: weight=3, act=4, acc_in=100 → acc_out=112"""
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    await reset(dut)
+    await load_weight(dut, 3)
+    await stream(dut, [4], [100])
+
+    result = from_signed32(dut.acc_out.value)
+    assert result == 112, f"Expected 112, got {result}"
+    dut._log.info(f"MAC with acc_in: PASS (got {result})")
+
+
+@cocotb.test()
+async def test_streaming_acc_in(dut):
+    """Simulate a column of PEs: acc_in accumulates down the column.
+    weight=3, activations=[1,2,4], acc_ins=[0,3,9] → acc_outs=[3,9,21]
+    Each acc_in is the previous PE's acc_out (with PIPE_DEPTH delay in real array,
+    but here we drive them directly to test the PE in isolation)."""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
     await load_weight(dut, 3)
 
-    activations = list(range(1, 15))
-    expected = sum(3 * a for a in activations)
-    await stream_activations(dut, activations)
+    activations = [1, 2, 4]
+    acc_ins = [0, 3, 9]
+    expected = [3, 9, 21]
+
+    await stream(dut, activations, acc_ins)
 
     result = from_signed32(dut.acc_out.value)
-    assert result == expected, f"Expected {expected}, got {result}"
-    dut._log.info(f"Dot product: PASS (got {result})")
+    assert result == expected[-1], f"Expected {expected[-1]}, got {result}"
+    dut._log.info(f"Streaming acc_in: PASS (got {result})")
 
 
 @cocotb.test()
 async def test_signed_negative_weight(dut):
-    """Negative weight × positive activation: -5 × 7 = -35"""
+    """Negative weight: weight=-5, act=7, acc_in=0 → acc_out=-35"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
     await load_weight(dut, -5)
-    await stream_activations(dut, [7])
+    await stream(dut, [7], [0])
 
     result = from_signed32(dut.acc_out.value)
     assert result == -35, f"Expected -35, got {result}"
@@ -103,11 +122,11 @@ async def test_signed_negative_weight(dut):
 
 @cocotb.test()
 async def test_signed_both_negative(dut):
-    """Both negative: -3 × -4 = 12"""
+    """Both negative: weight=-3, act=-4, acc_in=0 → acc_out=12"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
     await load_weight(dut, -3)
-    await stream_activations(dut, [-4])
+    await stream(dut, [-4], [0])
 
     result = from_signed32(dut.acc_out.value)
     assert result == 12, f"Expected 12, got {result}"
@@ -115,66 +134,105 @@ async def test_signed_both_negative(dut):
 
 
 @cocotb.test()
-async def test_clear_accumulator(dut):
-    """Accumulate, clear, verify zero, then accumulate again"""
+async def test_acc_in_passthrough(dut):
+    """acc_in with zero weight contribution: weight=0 not possible (int8),
+    use weight=1, act=0, acc_in=42 → acc_out=42 (passthrough)"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
-
-    await load_weight(dut, 10)
-    await stream_activations(dut, [5])  # expect 50
-
-    result = from_signed32(dut.acc_out.value)
-    assert result == 50, f"Expected 50 before clear, got {result}"
-
-    await clear_acc(dut)
+    await load_weight(dut, 1)
+    await stream(dut, [0], [42])
 
     result = from_signed32(dut.acc_out.value)
-    assert result == 0, f"Expected 0 after clear, got {result}"
-
-    # Fresh accumulation after clear: 10 * 3 = 30
-    await stream_activations(dut, [3])
-    result = from_signed32(dut.acc_out.value)
-    assert result == 30, f"Expected 30 after re-accumulate, got {result}"
-    dut._log.info("Clear accumulator: PASS")
+    assert result == 42, f"Expected 42, got {result}"
+    dut._log.info(f"acc_in passthrough: PASS (got {result})")
 
 
 @cocotb.test()
-async def test_saturation_boundary(dut):
-    """Large values: stay within int32 range for 14 taps"""
+async def test_max_values(dut):
+    """Max positive: weight=127, act=127, acc_in=0 → 16129"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
-
-    # Worst case 8-bit: 127 * 127 * 14 = 225,778 — well within int32
-    weight = 127
-    activations = [127] * 14
-    expected = sum(weight * a for a in activations)
-
-    await load_weight(dut, weight)
-    await stream_activations(dut, activations)
+    await load_weight(dut, 127)
+    await stream(dut, [127], [0])
 
     result = from_signed32(dut.acc_out.value)
-    assert result == expected, f"Expected {expected}, got {result}"
-    dut._log.info(f"Saturation boundary: PASS (got {result})")
+    assert result == 16129, f"Expected 16129, got {result}"
+    dut._log.info(f"Max values: PASS (got {result})")
 
 
 @cocotb.test()
-async def test_random_dot_products(dut):
-    """100 random dot products verified against Python reference"""
+async def test_output_valid_timing(dut):
+    """output_valid should go high exactly PIPE_DEPTH cycles after input_valid"""
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    await reset(dut)
+    await load_weight(dut, 1)
+
+    # Assert input_valid for one cycle
+    dut.act_in.value = to_signed8(1)
+    dut.acc_in.value = 0
+    dut.input_valid.value = 1
+    await RisingEdge(dut.clk)
+    dut.input_valid.value = 0
+
+    # output_valid should be low for PIPE_DEPTH-1 cycles
+    for i in range(PIPE_DEPTH - 1):
+        await RisingEdge(dut.clk)
+        assert dut.output_valid.value == 0, (
+            f"output_valid should be 0 at cycle {i + 1}, got {dut.output_valid.value}"
+        )
+
+    # Then high on cycle PIPE_DEPTH
+    await RisingEdge(dut.clk)
+    assert dut.output_valid.value == 1, (
+        f"output_valid should be 1 at cycle {PIPE_DEPTH}, got {dut.output_valid.value}"
+    )
+    dut._log.info("output_valid timing: PASS")
+
+
+@cocotb.test()
+async def test_act_out_timing(dut):
+    """act_out should be delayed by exactly PIPE_DEPTH cycles"""
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    await reset(dut)
+    await load_weight(dut, 1)
+
+    sentinel = 99
+    dut.act_in.value = to_signed8(sentinel)
+    dut.acc_in.value = 0
+    dut.input_valid.value = 1
+    await RisingEdge(dut.clk)
+    dut.act_in.value = 0
+    dut.input_valid.value = 0
+
+    for _ in range(PIPE_DEPTH - 1):
+        await RisingEdge(dut.clk)
+
+    await RisingEdge(dut.clk)
+    result = int(dut.act_out.value)
+    assert result == sentinel, f"Expected act_out={sentinel}, got {result}"
+    dut._log.info(f"act_out timing: PASS (got {result})")
+
+
+@cocotb.test()
+async def test_random_pe(dut):
+    """100 random single-cycle PE operations"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
 
     for trial in range(100):
-        weight = random.randint(-128, 127)
-        activations = [random.randint(-128, 127) for _ in range(14)]
-        expected = sum(weight * a for a in activations)
+        rng = random.Random(trial)
+        weight = rng.randint(-128, 127)
+        act = rng.randint(-128, 127)
+        acc = rng.randint(-(2**31), 2**31 - 1)
+        expected = acc + weight * act
 
-        await clear_acc(dut)
         await load_weight(dut, weight)
-        await stream_activations(dut, activations)
+        await stream(dut, [act], [acc])
 
         result = from_signed32(dut.acc_out.value)
         assert result == expected, (
-            f"Trial {trial}: weight={weight}, expected={expected}, got={result}"
+            f"Trial {trial}: weight={weight} act={act} acc_in={acc} "
+            f"expected={expected} got={result}"
         )
 
-    dut._log.info("100 random dot products: PASS")
+    dut._log.info("100 random PE ops: PASS")

@@ -12,6 +12,8 @@ package npu_pkg;
 
   localparam int ARRAY_SIZE = 16;
 
+  localparam int MAC_LATENCY = 3;
+
   typedef enum logic [3:0] {
     OP_LOAD_WEIGHT = 4'h0,
     OP_LOAD_INPUT  = 4'h1,

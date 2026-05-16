@@ -17,16 +17,22 @@ def ser():
     s.close()
 
 
+def stream(ser, activations: list[int], accumulations: list[int]):
+    assert len(activations) == len(accumulations)
+    for act, acc in zip(activations, accumulations):
+        send_pe_input(ser, act, acc)
+    # No flush — PE overwrites P each cycle, zeros would destroy the result.
+    # UART is slow enough that the pipeline has settled before read_result() fires.
+    time.sleep(0.005)
+
+
 def load_weight(ser, weight: int):
     ser.write(bytes([0x01, weight & 0xFF]))
 
 
-def send_activation(ser, act: int):
-    ser.write(bytes([0x02, act & 0xFF]))
-
-
-def clear_acc(ser):
-    ser.write(bytes([0x04]))
+def send_pe_input(ser, act: int, acc: int):
+    acc_bytes = struct.pack("<i", acc)
+    ser.write(bytes([0x02, act & 0xFF]) + acc_bytes)
 
 
 def read_result(ser) -> int:
@@ -37,93 +43,105 @@ def read_result(ser) -> int:
     return struct.unpack("<i", raw)[0]
 
 
-def stream_activations(ser, activations: list[int]):
-    for act in activations:
-        send_activation(ser, act)
-    for _ in range(PIPE_DEPTH):
-        send_activation(ser, 0)
-
-
-def test_single_mac(ser):
-    """weight=3, activation=4 → 12"""
-    clear_acc(ser)
+def test_single_multiply(ser):
+    """weight=3, act=4, acc_in=0 → 12"""
     load_weight(ser, 3)
-    stream_activations(ser, [4])
+    stream(ser, [4], [0])
     assert read_result(ser) == 12
 
 
-def test_dot_product(ser):
-    """weight=3, activations=[1..14] → 315"""
-    clear_acc(ser)
+def test_single_mac(ser):
+    """weight=3, act=4, acc_in=100 → 112"""
     load_weight(ser, 3)
-    activations = list(range(1, 15))
-    expected = sum(3 * a for a in activations)
-    stream_activations(ser, activations)
-    assert read_result(ser) == expected
+    stream(ser, [4], [100])
+    assert read_result(ser) == 112
+
+
+def test_simulated_column(ser):
+    """Simulate a column of 3 PEs by chaining acc_out into acc_in.
+    weight=3, acts=[1,2,4], acc_ins=[0,3,9] → final acc_out=21"""
+    load_weight(ser, 3)
+
+    acts = [1, 2, 4]
+    acc_ins = [0, 3, 9]
+
+    stream(ser, acts, acc_ins)
+    result = read_result(ser)
+    assert result == 21, f"Expected 21, got {result}"
 
 
 def test_signed_negative_weight(ser):
-    """weight=-5, activation=7 → -35"""
-    clear_acc(ser)
+    """weight=-5, act=7, acc_in=0 → -35"""
     load_weight(ser, -5)
-    stream_activations(ser, [7])
+    stream(ser, [7], [0])
     assert read_result(ser) == -35
 
 
 def test_signed_both_negative(ser):
-    """weight=-3, activation=-4 → 12"""
-    clear_acc(ser)
+    """weight=-3, act=-4, acc_in=0 → 12"""
     load_weight(ser, -3)
-    stream_activations(ser, [-4])
+    stream(ser, [-4], [0])
     assert read_result(ser) == 12
 
 
-def test_clear_accumulator(ser):
-    """Accumulate 50, clear, verify 0, then accumulate 30"""
-    clear_acc(ser)
-    load_weight(ser, 10)
-    stream_activations(ser, [5])
-    assert read_result(ser) == 50, "pre-clear value wrong"
+def test_negative_acc_in(ser):
+    """weight=3, act=4, acc_in=-100 → -88"""
+    load_weight(ser, 3)
+    stream(ser, [4], [-100])
+    assert read_result(ser) == -88
 
-    clear_acc(ser)
-    time.sleep(0.001)
-    assert read_result(ser) == 0, "accumulator not cleared"
 
-    stream_activations(ser, [3])
-    assert read_result(ser) == 30, "re-accumulation wrong"
+def test_acc_in_dominates(ser):
+    """Large acc_in: weight=1, act=1, acc_in=10000 → 10001"""
+    load_weight(ser, 1)
+    stream(ser, [1], [10000])
+    assert read_result(ser) == 10001
+
+
+def test_acc_in_passthrough(ser):
+    """weight=1, act=0, acc_in=42 → 42 (pure passthrough)"""
+    load_weight(ser, 1)
+    stream(ser, [0], [42])
+    assert read_result(ser) == 42
 
 
 def test_max_positive(ser):
-    """127 * 127 * 14 = 225778 — worst-case positive, well within int32"""
-    clear_acc(ser)
+    """weight=127, act=127, acc_in=0 → 16129"""
     load_weight(ser, 127)
-    stream_activations(ser, [127] * 14)
-    expected = 127 * 127 * 14
-    assert read_result(ser) == expected
+    stream(ser, [127], [0])
+    assert read_result(ser) == 16129
 
 
 def test_max_negative(ser):
-    """-128 * 127 * 14 = -227328 — worst-case negative"""
-    clear_acc(ser)
+    """weight=-128, act=127, acc_in=0 → -16256"""
     load_weight(ser, -128)
-    stream_activations(ser, [127] * 14)
-    expected = -128 * 127 * 14
-    assert read_result(ser) == expected
+    stream(ser, [127], [0])
+    assert read_result(ser) == -16256
+
+
+def test_weight_change(ser):
+    """Verify weight register updates correctly"""
+    load_weight(ser, 3)
+    stream(ser, [4], [0])
+    assert read_result(ser) == 12
+
+    load_weight(ser, 7)
+    stream(ser, [4], [0])
+    assert read_result(ser) == 28
 
 
 @pytest.mark.parametrize("trial", range(100))
-def test_random_dot_product(ser, trial):
-    rng = random.Random(trial)  # seeded so failures are reproducible
+def test_random_pe(ser, trial):
+    rng = random.Random(trial)
     weight = rng.randint(-128, 127)
-    activations = [rng.randint(-128, 127) for _ in range(14)]
-    expected = sum(weight * a for a in activations)
+    act = rng.randint(-128, 127)
+    acc = rng.randint(-(2**31), 2**31 - 1)
+    expected = acc + weight * act
 
-    clear_acc(ser)
     load_weight(ser, weight)
-    stream_activations(ser, activations)
-
+    stream(ser, [act], [acc])
     result = read_result(ser)
     assert result == expected, (
-        f"trial={trial} weight={weight} activations={activations} "
+        f"trial={trial} weight={weight} act={act} acc_in={acc} "
         f"expected={expected} got={result}"
     )

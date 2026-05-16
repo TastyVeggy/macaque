@@ -50,80 +50,86 @@ module mac_top #(
   int8_t  weight_in;
   logic   weight_load;
   int8_t  act_in;
-  logic   act_valid;
-  logic   clear_acc;
+  int32_t acc_in;
+  logic   input_valid;
   int32_t acc_out;
+  logic   output_valid_unused;
   int8_t  act_out_unused;
-  logic   act_valid_out_unused;
 
   mac_unit mac_inst (
-      .clk          (clk),
-      .rst          (rst),
-      .weight_in    (weight_in),
-      .weight_load  (weight_load),
-      .act_in       (act_in),
-      .act_valid    (act_valid),
-      .act_out      (act_out_unused),
-      .act_valid_out(act_valid_out_unused),
-      .clear_acc    (clear_acc),
-      .acc_out      (acc_out)
+      .clk(clk),
+      .rst(rst),
+
+      .weight_in      (weight_in),
+      .weight_load    (weight_load),
+      .weight_out     (),
+      .weight_load_out(),
+
+      .input_valid (input_valid),
+      .output_valid(output_valid_unused),
+
+      .act_in (act_in),
+      .act_out(act_out_unused),
+
+      .acc_in (acc_in),
+      .acc_out(acc_out)
   );
 
+  // ------------------------------------------------------------
   // Protocol:
-  //   0x01 <byte> load weight
-  //   0x02 <byte> send one activation
+  // 0x01 <weight> load weight
+  // 0x02 <act> <acc0><acc1><acc2><acc3> send one byte of activation then
+  // one byte of accumulation
   //   0x03        read result (FPGA replies 4 bytes, LSB first)
-  //   0x04        clear accumulator
 
   typedef enum logic [2:0] {
     IDLE,
     LOAD_WEIGHT,
-    SEND_ACT,
+    RECV_ACT,
+    RECV_ACC,
     TX_LOAD,
-    TX_BUSY,
-    TX_DONE
+    TX_BUSY
   } state_t;
 
-  state_t        state;
-  logic   [ 1:0] byte_cnt;
-  logic   [31:0] acc_reg;
+  state_t state;
+
+  logic [1:0] rx_cnt;
+  logic [1:0] tx_cnt;
+
+  logic [31:0] acc_buf;
+  logic [31:0] acc_latched;
 
   always_ff @(posedge clk) begin
     weight_load <= 1'b0;
-    act_valid   <= 1'b0;
-    clear_acc   <= 1'b0;
+    input_valid <= 1'b0;
     tx_valid    <= 1'b0;
 
     if (rst) begin
-      state     <= IDLE;
-      byte_cnt  <= '0;
-      acc_reg   <= '0;
-      weight_in <= '0;
-      act_in    <= '0;
-      tx_data   <= '0;
+      state       <= IDLE;
+      rx_cnt      <= '0;
+      tx_cnt      <= '0;
+      weight_in   <= '0;
+      act_in      <= '0;
+      acc_in      <= '0;
+      acc_buf     <= '0;
+      acc_latched <= '0;
+      tx_data     <= '0;
     end else begin
       case (state)
-        IDLE: begin
-          if (rx_valid) begin
-            case (rx_data)
-              8'h01: state <= LOAD_WEIGHT;
+        IDLE:
+        if (rx_valid) begin
+          case (rx_data)
+            8'h01: state <= LOAD_WEIGHT;
 
-              8'h02: state <= SEND_ACT;
+            8'h02: state <= RECV_ACT;
 
-              8'h03: begin
-                acc_reg  <= acc_out;
-                byte_cnt <= 2'b00;
-                state    <= TX_LOAD;
-              end
-
-              8'h04: begin
-                clear_acc <= 1'b1;
-                state     <= IDLE;
-              end
-
-              default: state <= IDLE;
-            endcase
-          end
+            8'h03: begin
+              acc_latched <= acc_out;
+              tx_cnt      <= 0;
+              state       <= TX_LOAD;
+            end
+            default: state <= IDLE;
+          endcase
         end
 
         LOAD_WEIGHT: begin
@@ -134,33 +140,45 @@ module mac_top #(
           end
         end
 
-        SEND_ACT: begin
+        RECV_ACT: begin
           if (rx_valid) begin
-            act_in    <= int8_t'(rx_data);
-            act_valid <= 1'b1;  // one-cycle pulse
-            state     <= IDLE;
+            act_in <= int8_t'(rx_data);
+            rx_cnt <= 0;
+            state  <= RECV_ACC;
+          end
+        end
+
+        RECV_ACC: begin
+          if (rx_valid) begin
+
+            acc_buf[rx_cnt*8+:8] <= rx_data;
+
+            if (rx_cnt == 2'd3) begin
+              acc_in      <= int32_t'({rx_data, acc_buf[23:16], acc_buf[15:8], acc_buf[7:0]});
+              input_valid <= 1'b1;  // one-cycle pulse
+              state       <= IDLE;
+            end else begin
+              rx_cnt <= rx_cnt + 1'b1;
+            end
+
           end
         end
 
         TX_LOAD: begin
           if (tx_ready) begin
-            tx_data  <= acc_reg[byte_cnt*8+:8];
+            tx_data  <= acc_latched[tx_cnt*8 +: 8];
             tx_valid <= 1'b1;
             state    <= TX_BUSY;
           end
         end
 
         TX_BUSY: begin
-          if (!tx_ready) state <= TX_DONE;
-        end
-
-        TX_DONE: begin
-          if (tx_ready) begin
-            if (byte_cnt == 2'b11) begin
+          if (!tx_ready) begin
+            if (tx_cnt == 2'd3) begin
               state <= IDLE;  // all 4 bytes sent
             end else begin
-              byte_cnt <= byte_cnt + 1'b1;
-              state    <= TX_LOAD; // send next byte
+              tx_cnt <= tx_cnt + 1'b1;
+              state  <= TX_LOAD;  // send next byte
             end
           end
         end
