@@ -6,12 +6,13 @@ TOP             ?= npu_top
 
 help:
 	@echo "Targets:"
-	@echo "  hw        - Build the hardware (Synthesis, Impl, Bitstream)"
-	@echo "  hw TOP=x  - Build the hardware with specified top module"
-	@echo "  sw 	   - Build the software stack"
-	@echo "  clean     - Remove build artifacts"
-	@echo "  test_sw   - Build and run C++ unit tests"
-	@echo "  sim_uart  - Test the uart"
+	@echo "  hw         - Build the hardware (Synthesis, Impl, Bitstream)"
+	@echo "  hw TOP=x   - Build the hardware with specified top module"
+	@echo "  sw         - Build the software stack"
+	@echo "  clean      - Fast clean (keep compiled dependencies)"
+	@echo "  distclean  - Full clean"
+	@echo "  test_sw    - Build and run sw unit tests"
+	@echo "  sim_uart   - Test the uart"
 
 hw: 
 	$(MAKE) -C hw TOP=$(TOP)
@@ -31,5 +32,10 @@ test_sw: sw
 
 clean:
 	$(MAKE) -C hw clean
-	rm -rf sw/build
+	cmake --build $(BUILD_SW) --target common/clean
+
+distclean:
+	$(MAKE) -C hw clean
+	rm -rf $(BUILD_SW)
+
 
