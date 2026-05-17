@@ -75,7 +75,7 @@ validate:
 	$(call check_top)
 
 tidy:
-	rm -rf .Xil *.log *.jou clockInfo.txt
+	rm -rf .Xil *.log *.jou clockInfo.txt vivado_pid*.str xvlog.pb
 
 clean: tidy
 	rm -rf $(BUILD_DIR)

@@ -15,6 +15,7 @@ __pycache__/
 env/
 venv/
 build/
+work/
 dist/
 compile_commands.json
 

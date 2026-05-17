@@ -1,0 +1,29 @@
+CONFIG_FILE := $(TB_DIR)/$(TB)/tb.cfg
+TOPLEVEL := $(shell grep '^TOP=' $(CONFIG_FILE) | cut -d'=' -f2)
+SIM := $(shell grep '^SIM=' $(CONFIG_FILE) | cut -d'=' -f2)
+
+# Fallbacks if config is missing
+TOPLEVEL ?= $(TB)
+SIM ?= verilator
+
+HW_DIR := $(shell cd .. && pwd)
+RTL_DIR ?= $(HW_DIR)/rtl
+TB_DIR ?= $(HW_DIR)/sim/tb
+WORK_DIR := $(HW_DIR)/sim/work/$(TB)
+
+FILELIST_PATH := $(TB_DIR)/$(TB)/sources.f
+RAW_SOURCES   := $(shell grep -v '^\#' $(FILELIST_PATH) | sed 's/[[:space:]]*$$//')
+
+VERILOG_SOURCES += $(addprefix $(RTL_DIR)/, $(RAW_SOURCES))
+
+VERILOG_SOURCES += $(wildcard $(TB_BASE)/$(TB)/*.sv)
+
+MODULE   := $(TB)_tb
+
+export PYTHONPATH := $(TB_DIR)/$(TB):$(PYTHONPATH)
+
+SIM_BUILD := $(WORK_DIR)/sim_build
+export COCOTB_RESULTS_FILE := $(WORK_DIR)/results.xml
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
+

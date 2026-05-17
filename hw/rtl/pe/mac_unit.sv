@@ -5,34 +5,36 @@ module mac_unit (
     input logic clk,
     input logic rst,
 
-    // Weight loading chain: flows east during configuration
+    // Weight loading chain: flows south during configuration
     input  int8_t weight_in,
-    input  logic  weight_load,
+    input  logic  weight_in_valid,
     output int8_t weight_out,
-    output logic  weight_load_out,
+    output logic  weight_out_valid,
 
-    input  logic  input_valid,
-    output logic  output_valid,
     // Activation stream: flows east during computation
     input  int8_t act_in,
     output int8_t act_out,
+    input  logic  act_in_valid,
+    output logic  act_out_valid,
 
     // Partial sum stream: flows south during computation
     input  int32_t acc_in,
-    output int32_t acc_out
+    output int32_t acc_out,
+    input  logic   acc_in_valid,
+    output logic   acc_out_valid
 );
 
   int8_t weight_reg;
   always_ff @(posedge clk) begin
     if (rst) begin
-      weight_reg      <= '0;
-      weight_out      <= '0;
-      weight_load_out <= '0;
+      weight_reg       <= '0;
+      weight_out       <= '0;
+      weight_out_valid <= '0;
     end else begin
-      if (weight_load) weight_reg <= weight_in;
+      if (weight_in_valid) weight_reg <= weight_in;
       // during configuration phase to pass down the weights
-      weight_out      <= weight_in;
-      weight_load_out <= weight_load;
+      weight_out       <= weight_in;
+      weight_out_valid <= weight_in_valid;
     end
   end
 
@@ -56,15 +58,20 @@ module mac_unit (
   endgenerate
 
   // MAC_LATENCY directly affects this logic
-  logic input_valid_d;
-  logic input_valid_d_d;
+  logic compute_enable;
+  assign compute_enable = act_in_valid && acc_in_valid;
+
+  // Pipeline delays for internal DSP stages
+  logic compute_enable_d;
+  logic compute_enable_d_d;
+
   always_ff @(posedge clk) begin
     if (rst) begin
-      input_valid_d   <= '0;
-      input_valid_d_d <= '0;
+      compute_enable_d   <= '0;
+      compute_enable_d_d <= '0;
     end else begin
-      input_valid_d   <= input_valid;
-      input_valid_d_d <= input_valid_d;
+      compute_enable_d   <= compute_enable;
+      compute_enable_d_d <= compute_enable_d;
     end
   end
 
@@ -83,7 +90,7 @@ module mac_unit (
   always_ff @(posedge clk) begin
     if (rst) begin
       dsp_c <= '0;
-    end else if (input_valid) begin
+    end else if (compute_enable) begin
       dsp_c <= 48'(signed'(acc_in));
     end
   end
@@ -121,14 +128,14 @@ module mac_unit (
       .INMODE        (5'b00000),
       .P             (dsp_p),
       .CEA1          (1'b0),
-      .CEA2          (input_valid),
+      .CEA2          (compute_enable),
       .CEB1          (1'b0),
-      .CEB2          (input_valid),
-      .CEC           (input_valid_d),
+      .CEB2          (compute_enable),
+      .CEC           (compute_enable_d),
       .CED           (1'b0),
       .CEAD          (1'b0),
-      .CEM           (input_valid_d),
-      .CEP           (input_valid_d_d),
+      .CEM           (compute_enable_d),
+      .CEP           (compute_enable_d_d),
       .CEALUMODE     (1'b0),
       .CECTRL        (1'b0),
       .CEINMODE      (1'b0),
@@ -176,7 +183,7 @@ module mac_unit (
       stage0_a <= '0;
       stage0_b <= '0;
       stage0_c <= '0;
-    end else if (input_valid) begin
+    end else if (compute_enable) begin
       stage0_a <= weight_reg;
       stage0_b <= act_in;
       stage0_c <= acc_in;
@@ -185,14 +192,14 @@ module mac_unit (
     if (rst) begin
       stage1_m <= '0;
       stage1_c <= '0;
-    end else if (input_valid_d) begin
+    end else if (compute_enable_d) begin
       stage1_m <= int16_t'(stage0_a) * int16_t'(stage0_b);
       stage1_c <= stage0_c;
     end
 
     if (rst) begin
       stage2_p <= '0;
-    end else if (input_valid_d_d) begin
+    end else if (compute_enable_d_d) begin
       stage2_p <= stage1_c + int32_t'(stage1_m);
     end
   end
@@ -201,26 +208,31 @@ module mac_unit (
 
 `endif
 
-  // delay activation, so next PE receive the activation in a manner that is
-  // synchronised with the DSP accumulation
-  int8_t act_pipe[PIPE_DEPTH];
-  logic  val_pipe[PIPE_DEPTH];
+  // quickly pump out the act_out, so can move fast in east direction
+  int8_t act_reg;
+  logic  act_valid_reg;
+  always_ff @(posedge clk) begin
+    act_reg <= rst ? '0 : act_in;
+    act_valid_reg <= rst ? '0 : act_in_valid;
+  end
+  assign act_out = act_reg;
+  assign act_out_valid = act_valid_reg;
+
+  // delay acc_valid, so next PE receive accurately receive the DSP
+  // accumulation
+  logic acc_out_valid_pipe[PIPE_DEPTH];
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      foreach (act_pipe[i]) act_pipe[i] <= '0;
-      foreach (val_pipe[i]) val_pipe[i] <= '0;
+      foreach (acc_out_valid_pipe[i]) acc_out_valid_pipe[i] <= '0;
     end else begin
-      act_pipe[0] <= act_in;
-      val_pipe[0] <= input_valid;
+      acc_out_valid_pipe[0] <= acc_in_valid;
       for (int i = 1; i < PIPE_DEPTH; i++) begin
-        act_pipe[i] <= act_pipe[i-1];
-        val_pipe[i] <= val_pipe[i-1];
+        acc_out_valid_pipe[i] <= acc_out_valid_pipe[i-1];
       end
     end
   end
 
-  assign act_out      = act_pipe[PIPE_DEPTH-1];
-  assign output_valid = val_pipe[PIPE_DEPTH-1];
+  assign acc_out_valid = acc_out_valid_pipe[PIPE_DEPTH-1];
 
 endmodule
