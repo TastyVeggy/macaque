@@ -33,12 +33,12 @@ Use the `TB` variable to specify the folder name and `MODE` to choose the engine
 
 SystemVerilog (XSim):
 ```bash
-make TB=pe MODE=xsim
+make TB=systolic_array MODE=xsim
 ```
 
 Python (Cocotb):
 ```bash
-make TB=pe MODE=cocotb
+make TB=systolic_array MODE=cocotb
 ```
 
 ## Environment Setup
