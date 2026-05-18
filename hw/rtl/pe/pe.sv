@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 import npu_pkg::*;
 
-module mac_unit (
+module pe (
     input logic clk,
     input logic rst,
 
@@ -11,19 +11,21 @@ module mac_unit (
     output int8_t weight_out,
     output logic  weight_out_valid,
 
+    // If hold, the weights will be stored in the PE, and not flow out
+    input logic weight_hold,
+
     // Activation stream: flows east during computation
     input  int8_t act_in,
-    output int8_t act_out,
     input  logic  act_in_valid,
+    output int8_t act_out,
     output logic  act_out_valid,
 
     // Partial sum stream: flows south during computation
     input  int32_t acc_in,
-    output int32_t acc_out,
     input  logic   acc_in_valid,
+    output int32_t acc_out,
     output logic   acc_out_valid
 );
-
   int8_t weight_reg;
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -31,8 +33,12 @@ module mac_unit (
       weight_out       <= '0;
       weight_out_valid <= '0;
     end else begin
-      if (weight_in_valid) weight_reg <= weight_in;
-      // during configuration phase to pass down the weights
+      // Latch the weight locally only if valid and NOT held
+      if (weight_in_valid && !weight_hold) begin
+        weight_reg <= weight_in;
+      end
+
+      // Weights will always flow
       weight_out       <= weight_in;
       weight_out_valid <= weight_in_valid;
     end
@@ -43,21 +49,21 @@ module mac_unit (
   //   Simulation:  stage0  + stage1  + stage2
   localparam int PIPE_DEPTH = 3;
 
-  // npu_pkg::MAC_LATENCY is the system-wide constant used by all other
+  // npu_pkg::PE_LATENCY is the system-wide constant used by all other
   // modules that schedule around the PE pipeline. PIPE_DEPTH is the
   // ground truth defined here ijn accordance to the physical implementation.
   // They cannot be derived from each other directly (circular dependency),
   // so this generate block enforces agreement at elaboration time.
   generate
-    if (MAC_LATENCY != PIPE_DEPTH) begin : gen_mac_latency_check
+    if (PE_LATENCY != PIPE_DEPTH) begin : gen_pe_latency_check
       // Kills synthesis
-      COMPILE_ERROR_MAC_LATENCY_does_not_match_mac_implementation illegal_inst ();
+      COMPILE_ERROR_PE_LATENCY_mismatch illegal_inst ();
       // Kills simulation
-      initial $fatal(1, "MAC_LATENCY must be %0d, got %0d", PIPE_DEPTH, npu_pkg::MAC_LATENCY);
+      initial $fatal(1, "PE_LATENCY must be %0d, got %0d", PIPE_DEPTH, PE_LATENCY);
     end
   endgenerate
 
-  // MAC_LATENCY directly affects this logic
+  // PE_LATENCY directly affects this logic
   logic compute_enable;
   assign compute_enable = act_in_valid && acc_in_valid;
 

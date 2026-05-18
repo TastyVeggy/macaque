@@ -10,9 +10,12 @@ package npu_pkg;
   localparam int SYS_CLK_FREQ = 50_000_000;
   localparam int UART_BAUD_DEFAULT = 115_200;
 
-  localparam int ARRAY_SIZE = 16;
+  localparam int ARRAY_SIZE = 14;
 
-  localparam int MAC_LATENCY = 3;
+  // Processing element: Total cycles from input to valid acc_out
+  localparam int PE_LATENCY = 3;
+  // Systolic array: Total cycles from initial input row to first valid drain_data.
+  localparam int SYSTOLIC_ARRAY_LATENCY = ARRAY_SIZE * PE_LATENCY + ARRAY_SIZE - 1;
 
   typedef enum logic [3:0] {
     OP_LOAD_WEIGHT = 4'h0,

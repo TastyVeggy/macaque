@@ -1,13 +1,14 @@
 `timescale 1ns / 1ps
 import npu_pkg::*;
 
-module mac_unit_tb ();
+module pe_tb ();
 
   logic clk, rst;
   int8_t  weight_in;
   logic   weight_in_valid;
   int8_t  weight_out;
   logic   weight_out_valid;
+  logic   weight_hold;
   int8_t  act_in;
   logic   act_in_valid;
   int8_t  act_out;
@@ -17,7 +18,7 @@ module mac_unit_tb ();
   int32_t acc_out;
   logic   acc_out_valid;
 
-  mac_unit dut (.*);
+  pe dut (.*);
 
   initial clk = 0;
   always #10 clk = ~clk;
@@ -28,6 +29,7 @@ module mac_unit_tb ();
   endtask
 
   task automatic load_weight(input int8_t w);
+    weight_hold = 0;
     weight_in = w;
     weight_in_valid = 1;
     tick();
@@ -35,7 +37,8 @@ module mac_unit_tb ();
     weight_in = 0;
   endtask
 
-  task automatic drive_mac(input int8_t a, input int32_t c);
+  task automatic drive_pe(input int8_t a, input int32_t c);
+    weight_hold = 1;
     act_in = a;
     acc_in = c;
     act_in_valid = 1;
@@ -51,6 +54,7 @@ module mac_unit_tb ();
 
   task automatic reset();
     rst = 1;
+    weight_hold = 0;
     weight_in = 0;
     weight_in_valid = 0;
     act_in = 0;
@@ -110,7 +114,7 @@ module mac_unit_tb ();
     load_weight(8'sd3);
     repeat (2) tick();  // let weight settle
 
-    drive_mac(8'sd4, 32'sd100);
+    drive_pe(8'sd4, 32'sd100);
     // #1 after posedge: act_out valid now
     check_valid("act_out_valid high", act_out_valid, 1'b1);
     check("act_out = 4", int'($signed(act_out)), 4);
@@ -134,7 +138,7 @@ module mac_unit_tb ();
     load_weight(8'sd1);
     repeat (2) tick();
 
-    drive_mac(8'b0101_1010, 32'sd0);
+    drive_pe(8'b0101_1010, 32'sd0);
     // #1 after posedge: act_out valid now
     check("act_out=0x5A at +1", int'(act_out), 8'b0101_1010);
     check_valid("act_out_valid=1 +1", act_out_valid, 1'b1);
@@ -184,9 +188,9 @@ module mac_unit_tb ();
     stream_expected[1] = 16;
     stream_expected[2] = 19;
 
-    drive_mac(8'sd1, 32'sd10);
-    drive_mac(8'sd2, 32'sd10);
-    drive_mac(8'sd3, 32'sd10);
+    drive_pe(8'sd1, 32'sd10);
+    drive_pe(8'sd2, 32'sd10);
+    drive_pe(8'sd3, 32'sd10);
 
     @stream_done;
 
@@ -197,12 +201,37 @@ module mac_unit_tb ();
     reset();
     load_weight(-8'sd5);
     repeat (2) tick();
-    drive_mac(8'sd7, 32'sd0);
+    drive_pe(8'sd7, 32'sd0);
     tick();
     tick();  // wait 3 cycles
     check("weight=-5 act=7: -35", int'($signed(acc_out)), -35);
 
     repeat (3) tick();
+
+    // Test 6: Verify weight_hold blocks updating internal register, but allows chain flow
+    $display("\nTest 6: weight_hold validation");
+    reset();
+    load_weight(8'sd10);  // Latch initial weight = 10
+    repeat (2) tick();
+
+    // Turn on hold, while passing a new weight down the chain
+    weight_hold = 1;
+    weight_in = 8'sd99;
+    weight_in_valid = 1;
+    tick();
+
+    // Check that the new weight still propagates downstream on the 1-cycle pipeline
+    check("weight_out passthrough", int'($signed(weight_out)), 99);
+    check_valid("weight_out_valid passthrough", weight_out_valid, 1'b1);
+
+    weight_in = 0;
+    weight_in_valid = 0;
+
+    // Perform computation to confirm the active internal weight is still 10, NOT 99
+    drive_pe(8'sd5, 32'sd0);  // 10 * 5 + 0 = 50
+    tick();
+    tick();
+    check("Retained weight evaluation (exp 50)", int'($signed(acc_out)), 50);
 
     $display("\n\Result: %0d PASS  %0d FAIL", pass_cnt, fail_cnt);
     $finish;

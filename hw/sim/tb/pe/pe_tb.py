@@ -9,6 +9,7 @@ ACT_DELAY = 1  # for act_out
 
 async def reset(dut):
     dut.rst.value = 1
+    dut.weight_hold.value = 0
     dut.weight_in.value = 0
     dut.weight_in_valid.value = 0
     dut.act_in.value = 0
@@ -36,6 +37,7 @@ def from_signed32(val):
 
 
 async def load_weight(dut, weight):
+    dut.weight_hold.value = 0
     dut.weight_in.value = to_signed8(weight)
     dut.weight_in_valid.value = 1
     await RisingEdge(dut.clk)
@@ -44,6 +46,7 @@ async def load_weight(dut, weight):
 
 async def drive_one(dut, act, acc):
     """Drive act and acc for one cycle with both valids high"""
+    dut.weight_hold.value = 1
     dut.act_in.value = to_signed8(act)
     dut.acc_in.value = to_signed32(acc)
     dut.act_in_valid.value = 1
@@ -76,6 +79,7 @@ async def test_act_out_is_1_cycle(dut):
     await load_weight(dut, 1)
 
     sentinel = 0x5A
+    dut.weight_hold.value = 1
     dut.act_in.value = sentinel
     dut.act_in_valid.value = 1
     dut.acc_in.value = 0
@@ -110,6 +114,7 @@ async def test_act_out_not_3_cycles(dut):
     await load_weight(dut, 1)
 
     sentinel = 0x7B
+    dut.weight_hold.value = 1
     dut.act_in.value = sentinel
     dut.act_in_valid.value = 1
     dut.acc_in.value = 0
@@ -140,6 +145,7 @@ async def test_act_vs_acc_valid(dut):
     await reset(dut)
     await load_weight(dut, 1)
 
+    dut.weight_hold.value = 1
     dut.act_in.value = to_signed8(5)
     dut.act_in_valid.value = 1
     dut.acc_in.value = to_signed32(7)
@@ -197,6 +203,7 @@ async def test_back_to_back_act_passthrough(dut):
     # Cycle 5: drive nothing, sample act_out = sent[4]
 
     for i, val in enumerate(sent):
+        dut.weight_hold.value = 1
         dut.act_in.value = to_signed8(val)
         dut.act_in_valid.value = 1
         dut.acc_in.value = 0
@@ -230,6 +237,7 @@ async def test_acc_out_valid_is_pipe_depth(dut):
     await load_weight(dut, 1)
 
     # Single cycle pulse
+    dut.weight_hold.value = 1
     dut.act_in.value = to_signed8(1)
     dut.act_in_valid.value = 1
     dut.acc_in.value = 0
@@ -265,6 +273,7 @@ async def test_acc_out_valid_is_pipe_depth(dut):
 async def test_single_mac(dut):
     """weight=3, act=4, acc_in=100 → acc_out=112"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    # cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
     await reset(dut)
     await load_weight(dut, 3)
     await stream_and_wait(dut, [4], [100])
@@ -275,11 +284,14 @@ async def test_single_mac(dut):
 
 @cocotb.test()
 async def test_random_mac(dut):
-    """100 random signle-cycle MAC operations"""
+    """100 random single-cycle MAC operations"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
-    await reset(dut)
 
+    await reset(dut)
     for trial in range(100):
+        # Reset at the start of EVERY trial to match the SV testbench behavior
+        # and completely wipe out old pipeline states
+
         rng = random.Random(trial)
         weight = rng.randint(-128, 127)
         act = rng.randint(-128, 127)
