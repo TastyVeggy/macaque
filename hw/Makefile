@@ -71,6 +71,9 @@ program: $(PROGRAM_STAMP)
 project:
 	$(VIV_BIN) -source $(SCRIPT_DIR)/project.tcl -tclargs $(ROOT_DIR)
 
+sim_hw:
+	$(MAKE) sim_hw -C sim TB=$(TB) MODE=$(MODE)
+
 validate:
 	$(call check_top)
 
@@ -79,6 +82,5 @@ tidy:
 
 clean: tidy
 	rm -rf $(BUILD_DIR)
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find $(SIM_DIR)/tb -type d -name "sim_build" -exec rm -rf {} +
-	find $(SIM_DIR)/tb -type f -name "results.xml" -exec rm -rf {} +
+	$(MAKE) -C sim clean
+

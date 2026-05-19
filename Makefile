@@ -29,12 +29,12 @@ test_sw: sw
 
 clean:
 	$(MAKE) -C hw clean
-	$(MAKE) -C hw/sim clean
-	cmake --build $(BUILD_SW) --target common/clean
+ifneq ($(wildcard $(BUILD_SW)),)
+	-cmake --build $(BUILD_SW) --target common/clean
+endif
 
 distclean:
 	$(MAKE) -C hw clean
-	$(MAKE) -C hw/sim clean
 	rm -rf $(BUILD_SW)
 
 

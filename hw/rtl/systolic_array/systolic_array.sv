@@ -200,7 +200,11 @@ module systolic_array (
   endgenerate
 
   assign drain_data = deskewed_out;
-  assign drain_valid = deskewed_vld.and();  // All valid columns should be identical given the skews
+  // All valid column should be identical given the skews
+  always_comb begin
+    drain_valid = 1'b1;
+    for (int i = 0; i < ARRAY_SIZE; i++) drain_valid &= deskewed_vld[i];
+  end
 
   typedef enum logic {
     STANDARD,    // idling/computing
