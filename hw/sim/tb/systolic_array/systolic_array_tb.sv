@@ -1,22 +1,23 @@
 `timescale 1ns / 1ps
 
-import npu_pkg::*;
-
-
 module systolic_array_tb;
+
+  import npu_pkg::ARRAY_SIZE;
+  import npu_pkg::SYSTOLIC_ARRAY_LATENCY;
+  import npu_pkg::PE_LATENCY;
 
   logic clk, rst;
 
-  weight_vec_t weight_data;
+  npu_pkg::weight_vec_t weight_data;
   logic weight_valid;
 
-  act_vec_t act_data;
+  npu_pkg::act_vec_t act_data;
   logic act_valid;
 
-  bias_vec_t bias_data;
+  npu_pkg::bias_vec_t bias_data;
   logic bias_valid;
 
-  acc_vec_t drain_data;
+  npu_pkg::acc_vec_t drain_data;
   logic drain_valid;
 
   logic ready;

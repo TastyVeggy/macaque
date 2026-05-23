@@ -1,21 +1,20 @@
 `timescale 1ns / 1ps
-import npu_pkg::*;
 
 module pe_tb ();
 
   logic clk, rst;
-  weight_t weight_in;
+  npu_pkg::weight_t weight_in;
   logic weight_in_valid;
-  weight_t weight_out;
+  npu_pkg::weight_t weight_out;
   logic weight_out_valid;
   logic weight_hold;
-  act_t act_in;
+  npu_pkg::act_t act_in;
   logic act_in_valid;
-  act_t act_out;
+  npu_pkg::act_t act_out;
   logic act_out_valid;
-  acc_t acc_in;
+  npu_pkg::acc_t acc_in;
   logic acc_in_valid;
-  acc_t acc_out;
+  npu_pkg::acc_t acc_out;
   logic acc_out_valid;
 
   pe dut (.*);
@@ -28,7 +27,7 @@ module pe_tb ();
     #1;
   endtask
 
-  task automatic load_weight(input weight_t w);
+  task automatic load_weight(input npu_pkg::weight_t w);
     weight_hold = 0;
     weight_in = w;
     weight_in_valid = 1;
@@ -37,7 +36,7 @@ module pe_tb ();
     weight_in = 0;
   endtask
 
-  task automatic drive_pe(input act_t a, input acc_t c);
+  task automatic drive_pe(input npu_pkg::act_t a, input npu_pkg::acc_t c);
     weight_hold = 1;
     act_in = a;
     acc_in = c;
@@ -97,8 +96,8 @@ module pe_tb ();
       $display("  Stream[%0d]: got=%0d exp=%0d %s", stream_count, $signed(acc_out),
                stream_expected[stream_count], ($signed(acc_out)
                === stream_expected[stream_count]) ? "PASS" : "FAIL");
-      stream_count++;
-      if (stream_count == 3)->stream_done;
+      stream_count <= stream_count + 1;
+      if (stream_count == 2)->stream_done;
     end
   end
 
@@ -161,7 +160,7 @@ module pe_tb ();
     repeat (2) tick();
 
     begin
-      automatic act_t s[5] = '{10, 20, 30, 40, 50};
+      automatic npu_pkg::act_t s[5] = '{10, 20, 30, 40, 50};
       for (int i = 0; i < 5; i++) begin
         act_in = s[i];
         act_in_valid = 1;
@@ -233,7 +232,7 @@ module pe_tb ();
     tick();
     check("Retained weight evaluation (exp 50)", int'($signed(acc_out)), 50);
 
-    $display("\n\Result: %0d PASS  %0d FAIL", pass_cnt, fail_cnt);
+    $display("\nResult: %0d PASS  %0d FAIL", pass_cnt, fail_cnt);
     $finish;
   end
 

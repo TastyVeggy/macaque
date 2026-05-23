@@ -35,4 +35,5 @@ vivado_pid*.str
 *.bit
 *.bin
 *.dcp
+.nvim
 

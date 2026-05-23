@@ -9,11 +9,11 @@ module uart_rx #(
     output logic [7:0] rx_data,
     output logic       rx_valid
 );
-  localparam int BIT_PERIOD_INT = CLK_FREQ / BAUD_RATE;
-  typedef logic [$clog2(BIT_PERIOD_INT)-1:0] uart_cnt_t;
+  localparam int BitPeriodInt = CLK_FREQ / BAUD_RATE;
+  typedef logic [$clog2(BitPeriodInt)-1:0] uart_cnt_t;
 
-  localparam uart_cnt_t BIT_PERIOD = uart_cnt_t'(BIT_PERIOD_INT);
-  localparam uart_cnt_t HALF_PERIOD = BIT_PERIOD / 2;
+  localparam uart_cnt_t BitPeriod = uart_cnt_t'(BitPeriodInt);
+  localparam uart_cnt_t HalfPeriod = BitPeriod / 2;
 
 
   logic rx_meta, rx_sync;
@@ -64,7 +64,7 @@ module uart_rx #(
         end
 
         START: begin
-          if (clk_cnt == HALF_PERIOD - 1'b1) begin
+          if (clk_cnt == HalfPeriod - 1'b1) begin
             clk_cnt <= '0;
             if (rx_sync == 1'b0) begin
               state <= DATA;
@@ -77,7 +77,7 @@ module uart_rx #(
         end
 
         DATA: begin
-          if (clk_cnt == BIT_PERIOD - 1'b1) begin
+          if (clk_cnt == BitPeriod - 1'b1) begin
             clk_cnt   <= '0;
             shift_reg <= {rx_sync, shift_reg[7:1]};
             if (bit_cnt == 3'd7) begin
@@ -91,7 +91,7 @@ module uart_rx #(
         end
 
         STOP: begin
-          if (clk_cnt == BIT_PERIOD - 1'b1) begin
+          if (clk_cnt == BitPeriod - 1'b1) begin
             rx_data <= shift_reg;
             rx_valid <= 1'b1;
             state <= IDLE;

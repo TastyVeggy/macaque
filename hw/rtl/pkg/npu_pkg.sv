@@ -1,18 +1,16 @@
 package npu_pkg;
 
-  localparam int ARRAY_SIZE = 14;
-  localparam int BRAM_DEPTH = 256;
-  localparam int BRAM_ADDR_W = $clog2(BRAM_DEPTH);
-  localparam int SYS_CLK_FREQ = 50_000_000;
-  localparam int UART_BAUD_DEFAULT = 115_200;
+  parameter int ARRAY_SIZE = 14;
+  parameter int BRAM_DEPTH = 256;
+  parameter int SYS_CLK_FREQ = 50_000_000;
+  parameter int UART_BAUD_DEFAULT = 115_200;
 
   // In systolic array
-  localparam int DTYPE_WEIGHT_W = 8;
-  localparam int DTYPE_ACT_W = 8;
-  localparam int DTYPE_PRODUCT_W = DTYPE_WEIGHT_W + DTYPE_ACT_W;
-  localparam int DTYPE_BIAS_W = 32;
-  localparam int DTYPE_ACC_W = 32;
-
+  parameter int DTYPE_WEIGHT_W = 8;
+  parameter int DTYPE_ACT_W = 8;
+  parameter int DTYPE_PRODUCT_W = DTYPE_WEIGHT_W + DTYPE_ACT_W;
+  parameter int DTYPE_BIAS_W = 32;
+  parameter int DTYPE_ACC_W = 32;
 
   typedef logic signed [DTYPE_WEIGHT_W-1:0] weight_t;
   typedef logic signed [DTYPE_ACT_W-1:0] act_t;
@@ -25,10 +23,16 @@ package npu_pkg;
   typedef bias_t bias_vec_t[ARRAY_SIZE];
   typedef acc_t acc_vec_t[ARRAY_SIZE];  // essentially output
 
+
+  // BRAM
+  parameter int DTYPE_BRAM_ADDR_W = $clog2(BRAM_DEPTH);
+
+  typedef logic signed [DTYPE_BRAM_ADDR_W-1:0] bram_addr_t;
+
   // Processing element: Total cycles from input to valid acc_out
-  localparam int PE_LATENCY = 3;
+  parameter int PE_LATENCY = 3;
   // Systolic array: Total cycles from initial input row to first valid drain_data.
-  localparam int SYSTOLIC_ARRAY_LATENCY = ARRAY_SIZE * PE_LATENCY + ARRAY_SIZE - 1;
+  parameter int SYSTOLIC_ARRAY_LATENCY = ARRAY_SIZE * PE_LATENCY + ARRAY_SIZE - 1;
 
   typedef enum logic [3:0] {
     OP_LOAD_WEIGHT = 4'h0,

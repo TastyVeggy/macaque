@@ -10,10 +10,10 @@ module uart_tx #(
     output logic tx_ready,
     output logic tx_pin
 );
-  localparam int BIT_PERIOD_INT = CLK_FREQ / BAUD_RATE;
-  typedef logic [$clog2(BIT_PERIOD_INT)-1:0] uart_cnt_t;
+  localparam int BitPeriodInt = CLK_FREQ / BAUD_RATE;
+  typedef logic [$clog2(BitPeriodInt)-1:0] uart_cnt_t;
 
-  localparam uart_cnt_t BIT_PERIOD = uart_cnt_t'(BIT_PERIOD_INT);
+  localparam uart_cnt_t BitPeriod = uart_cnt_t'(BitPeriodInt);
 
   typedef enum logic [1:0] {
     IDLE  = 2'b00,
@@ -52,7 +52,7 @@ module uart_tx #(
         START: begin
           tx_pin   <= 1'b0;
           tx_ready <= 1'b0;
-          if (clk_cnt == BIT_PERIOD - 1) begin
+          if (clk_cnt == BitPeriod - 1) begin
             clk_cnt <= '0;
             state   <= DATA;
           end else begin
@@ -63,7 +63,7 @@ module uart_tx #(
         DATA: begin
           tx_pin   <= shift_reg[0];
           tx_ready <= 1'b0;
-          if (clk_cnt == BIT_PERIOD - 1) begin
+          if (clk_cnt == BitPeriod - 1) begin
             clk_cnt <= '0;
             if (bit_cnt == 3'd7) begin
               state <= STOP;
@@ -79,7 +79,7 @@ module uart_tx #(
         STOP: begin
           tx_pin   <= 1'b1;
           tx_ready <= 1'b0;
-          if (clk_cnt == BIT_PERIOD - 1) begin
+          if (clk_cnt == BitPeriod - 1) begin
             state <= IDLE;
             tx_ready <= 1'b1;
           end else begin

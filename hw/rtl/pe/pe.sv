@@ -1,32 +1,30 @@
 `timescale 1ns / 1ps
-import npu_pkg::*;
-
 module pe (
     input logic clk,
     input logic rst,
 
     // Weight loading chain: flows south during configuration
-    input weight_t weight_in,
+    input npu_pkg::weight_t weight_in,
     input logic weight_in_valid,
-    output weight_t weight_out,
+    output npu_pkg::weight_t weight_out,
     output logic weight_out_valid,
 
     // If hold, the weights will be stored in the PE, and not flow out
     input logic weight_hold,
 
     // Activation stream: flows east during computation
-    input  act_t act_in,
-    input  logic act_in_valid,
-    output act_t act_out,
+    input npu_pkg::act_t act_in,
+    input logic act_in_valid,
+    output npu_pkg::act_t act_out,
     output logic act_out_valid,
 
     // Partial sum stream: flows south during computation
-    input  acc_t acc_in,
-    input  logic acc_in_valid,
-    output acc_t acc_out,
+    input npu_pkg::acc_t acc_in,
+    input logic acc_in_valid,
+    output npu_pkg::acc_t acc_out,
     output logic acc_out_valid
 );
-  weight_t weight_reg;
+  npu_pkg::weight_t weight_reg;
   always_ff @(posedge clk) begin
     if (rst) begin
       weight_reg       <= '0;
@@ -47,19 +45,21 @@ module pe (
   // Pipeline depth
   //   Synthesis:   AREG(1) + MREG(1) + PREG(1)
   //   Simulation:  stage0  + stage1  + stage2
-  localparam int PIPE_DEPTH = 3;
+  localparam int PipeDepth = 3;
 
   // npu_pkg::PE_LATENCY is the system-wide constant used by all other
-  // modules that schedule around the PE pipeline. PIPE_DEPTH is the
+  // modules that schedule around the PE pipeline. PipeDepth is the
   // ground truth defined here ijn accordance to the physical implementation.
   // They cannot be derived from each other directly (circular dependency),
   // so this generate block enforces agreement at elaboration time.
   generate
-    if (PE_LATENCY != PIPE_DEPTH) begin : gen_pe_latency_check
+    import npu_pkg::PE_LATENCY;
+
+    if (PE_LATENCY != PipeDepth) begin : gen_pe_latency_check
       // Kills synthesis
       COMPILE_ERROR_PE_LATENCY_mismatch illegal_inst ();
       // Kills simulation
-      initial $fatal(1, "PE_LATENCY must be %0d, got %0d", PIPE_DEPTH, PE_LATENCY);
+      initial $fatal(1, "PE_LATENCY must be %0d, got %0d", PipeDepth, PE_LATENCY);
     end
   endgenerate
 
@@ -169,7 +169,7 @@ module pe (
   );
 
 
-  assign acc_out = dsp_p[DTYPE_ACC_W-1:0];
+  assign acc_out = dsp_p[npu_pkg::DTYPE_ACC_W-1:0];
 
 `else
 
@@ -177,12 +177,12 @@ module pe (
   //   Stage 0 (AREG/BREG/CREG): latch inputs
   //   Stage 1 (MREG):      multiply
   //   Stage 2 (PREG):      accumulate
-  weight_t stage0_a;
-  act_t stage0_b;
-  acc_t stage0_c;
-  acc_t stage1_c;
-  product_t stage1_m;
-  acc_t stage2_p;
+  npu_pkg::weight_t stage0_a;
+  npu_pkg::act_t stage0_b;
+  npu_pkg::acc_t stage0_c;
+  npu_pkg::acc_t stage1_c;
+  npu_pkg::product_t stage1_m;
+  npu_pkg::acc_t stage2_p;
 
   always_ff @(posedge clk) begin
 
@@ -200,14 +200,14 @@ module pe (
       stage1_m <= '0;
       stage1_c <= '0;
     end else if (compute_enable_d) begin
-      stage1_m <= product_t'(stage0_a) * product_t'(stage0_b);
+      stage1_m <= npu_pkg::product_t'(stage0_a) * npu_pkg::product_t'(stage0_b);
       stage1_c <= stage0_c;
     end
 
     if (rst) begin
       stage2_p <= '0;
     end else if (compute_enable_d_d) begin
-      stage2_p <= stage1_c + acc_t'(stage1_m);
+      stage2_p <= stage1_c + npu_pkg::acc_t'(stage1_m);
     end
   end
 
@@ -216,7 +216,7 @@ module pe (
 `endif
 
   // quickly pump out the act_out, so can move fast in east direction
-  act_t act_reg;
+  npu_pkg::act_t act_reg;
   logic act_valid_reg;
   always_ff @(posedge clk) begin
     act_reg <= rst ? '0 : act_in;
@@ -227,19 +227,19 @@ module pe (
 
   // delay acc_valid, so next PE receive accurately receive the DSP
   // accumulation
-  logic acc_out_valid_pipe[PIPE_DEPTH];
+  logic acc_out_valid_pipe[PipeDepth];
 
   always_ff @(posedge clk) begin
     if (rst) begin
       foreach (acc_out_valid_pipe[i]) acc_out_valid_pipe[i] <= '0;
     end else begin
       acc_out_valid_pipe[0] <= acc_in_valid;
-      for (int i = 1; i < PIPE_DEPTH; i++) begin
+      for (int i = 1; i < PipeDepth; i++) begin
         acc_out_valid_pipe[i] <= acc_out_valid_pipe[i-1];
       end
     end
   end
 
-  assign acc_out_valid = acc_out_valid_pipe[PIPE_DEPTH-1];
+  assign acc_out_valid = acc_out_valid_pipe[PipeDepth-1];
 
 endmodule
