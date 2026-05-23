@@ -18,6 +18,7 @@ build/
 work/
 dist/
 compile_commands.json
+.cache
 
 *.log
 *.jou

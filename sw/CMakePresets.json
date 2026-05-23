@@ -1,23 +1,24 @@
 {
-  "version": 3,
+  "version": 6,
   "configurePresets": [
     {
       "name": "debug",
-      "displayName": "Debug with sanitizers",
+      "displayName": "Debug",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "MACAQUE_BUILD_TESTS": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/.cache/fetchcontent"
       }
     },
     {
       "name": "release",
-      "displayName": "Release optimised",
+      "displayName": "Release",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS": "-O3 -march=native"
+        "CMAKE_CXX_FLAGS": "-O3",
+        "MACAQUE_BUILD_TESTS": "OFF"
       }
     }
   ],
@@ -30,5 +31,15 @@
       "name": "release",
       "configurePreset": "release"
     }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }
+

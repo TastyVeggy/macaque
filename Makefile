@@ -1,18 +1,20 @@
 export ROOT_DIR := $(shell pwd)
 BUILD_SW        := sw/build/debug
 TOP             ?= npu_top
+PROJECT := macaque
+PRESET ?= debug
 
-.PHONY: hw sw clean distclean help test_sw sim_hw
+.PHONY: hw sim_hw sw test_sw clean distclean
 
 help:
 	@echo "Targets:"
 	@echo "  hw                            - Build the hardware (Synthesis, Impl, Bitstream)"
 	@echo "  hw TOP=x                      - Build the hardware with specified top module"
+	@echo "  sim_hw TB=x MODE=cocotb|xsim  - Simulate hardware"
 	@echo "  sw                            - Build the software stack"
+	@echo "  test_sw                       - Build and run sw unit tests"
 	@echo "  clean                         - Fast clean (keep compiled dependencies)"
 	@echo "  distclean                     - Full clean"
-	@echo "  test_sw                       - Build and run sw unit tests"
-	@echo "  sim_hw TB=x MODE=cocotb|xsim  - Simulate hardware"
 
 hw: 
 	$(MAKE) -C hw TOP=$(TOP)
@@ -21,20 +23,16 @@ sim_hw:
 	$(MAKE) sim_hw -C hw/sim TB=$(TB) MODE=$(MODE)
 
 sw:
-	cmake --preset debug -S sw
-	cmake --build $(BUILD_SW)
+	$(MAKE) -C sw PRESET=$(PRESET)
 
-test_sw: sw
-	ctest --test-dir $(BUILD_SW) --output-on-failure
+test_sw:
+	$(MAKE) -C sw test PRESET=$(PRESET)
 
 clean:
-	$(MAKE) -C hw clean
-ifneq ($(wildcard $(BUILD_SW)),)
-	-cmake --build $(BUILD_SW) --target common/clean
-endif
+	$(MAKE) -C hw clean 
+	$(MAKE) -C sw clean
 
-distclean:
-	$(MAKE) -C hw clean
-	rm -rf $(BUILD_SW)
+distclean: clean
+	$(MAKE) -C sw distclean
 
 
