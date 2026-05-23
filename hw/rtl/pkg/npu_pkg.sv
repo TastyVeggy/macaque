@@ -1,16 +1,29 @@
 package npu_pkg;
 
-  localparam int DATA_WIDTH = 8;
-  localparam int ACC_WIDTH = 32;
-
-  typedef logic signed [DATA_WIDTH-1:0] int8_t;
-  typedef logic signed [DATA_WIDTH*2-1:0] int16_t;
-  typedef logic signed [ACC_WIDTH-1:0] int32_t;
-
+  localparam int ARRAY_SIZE = 14;
+  localparam int BRAM_DEPTH = 256;
+  localparam int BRAM_ADDR_W = $clog2(BRAM_DEPTH);
   localparam int SYS_CLK_FREQ = 50_000_000;
   localparam int UART_BAUD_DEFAULT = 115_200;
 
-  localparam int ARRAY_SIZE = 14;
+  // In systolic array
+  localparam int DTYPE_WEIGHT_W = 8;
+  localparam int DTYPE_ACT_W = 8;
+  localparam int DTYPE_PRODUCT_W = DTYPE_WEIGHT_W + DTYPE_ACT_W;
+  localparam int DTYPE_BIAS_W = 32;
+  localparam int DTYPE_ACC_W = 32;
+
+
+  typedef logic signed [DTYPE_WEIGHT_W-1:0] weight_t;
+  typedef logic signed [DTYPE_ACT_W-1:0] act_t;
+  typedef logic signed [DTYPE_PRODUCT_W-1:0] product_t;
+  typedef logic signed [DTYPE_BIAS_W-1:0] bias_t;
+  typedef logic signed [DTYPE_ACC_W-1:0] acc_t;  // essentially output
+
+  typedef weight_t weight_vec_t[ARRAY_SIZE];
+  typedef act_t act_vec_t[ARRAY_SIZE];
+  typedef bias_t bias_vec_t[ARRAY_SIZE];
+  typedef acc_t acc_vec_t[ARRAY_SIZE];  // essentially output
 
   // Processing element: Total cycles from input to valid acc_out
   localparam int PE_LATENCY = 3;

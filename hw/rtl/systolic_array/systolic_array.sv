@@ -7,22 +7,23 @@ module systolic_array (
     input logic rst,
 
     // Weight configuration: Preload (ARRAY_SIZE x ARRAY_SIZE) weights during configuration phase. Flow north from bottom
-    input int8_t weight_data [ARRAY_SIZE],
-    input logic  weight_valid,
+    input weight_vec_t weight_data,
+    input logic weight_valid,
 
     // Activation inputs: Present one (ARRAY_SIZE sized) row of Matrix A (N x ARRAY_SIZE) every single cycle. Flows east from left
-    input int8_t act_data [ARRAY_SIZE],
-    input logic  act_valid,
+    input act_vec_t act_data,
+    input logic act_valid,
 
     // Bias inputs: Present one (ARRAY_SIZE sized) row of bias matrix (N x ARRAY_SIZE) matching the current row of A. Flows south from top
-    input int32_t bias_data [ARRAY_SIZE],
-    input logic   bias_valid,
+    input bias_vec_t bias_data,
+    input logic bias_valid,
 
     // Outputs: (ARRAY_SIZE sized) row of the (N x ARRAY_SIZE) output matrix of AW
     // + B drop out back-to-back (after delay of DRAIN_LATENCY)
-    output int32_t drain_data [ARRAY_SIZE],
-    output logic   drain_valid,
-    output logic   ready
+    output acc_vec_t drain_data,
+    output logic drain_valid,
+
+    output logic ready
 );
   // Total latency from AFTER the cycle of initial input of Row 0 to
   // the cycle where there is valid output (at drain_data).
@@ -42,8 +43,8 @@ module systolic_array (
   // Activation input skewing: We delay the entrance into a leftmost pe of the systolic
   // grid that is at row r, corresponding to column r of the activation matrix by
   // r * PE_LATENCY
-  int8_t act_skewed      [ARRAY_SIZE];
-  logic  act_valid_skewed[ARRAY_SIZE];
+  act_vec_t act_skewed;
+  logic act_valid_skewed[ARRAY_SIZE];
 
   genvar r;
   generate
@@ -53,8 +54,8 @@ module systolic_array (
         assign act_valid_skewed[0] = act_valid;
       end else begin : gen_act_skew_main
         localparam int in_delay = r * PE_LATENCY;
-        int8_t act_pipe[in_delay];
-        logic  vld_pipe[in_delay];
+        act_t act_pipe[in_delay];
+        logic vld_pipe[in_delay];
 
         always_ff @(posedge clk) begin
           if (rst) begin
@@ -76,7 +77,7 @@ module systolic_array (
   endgenerate
 
   // Bias input skewing: We delay column c of the weight matrix by c cycles
-  int32_t bias_skewed[ARRAY_SIZE];
+  bias_vec_t bias_skewed;
   logic bias_valid_skewed[ARRAY_SIZE];
 
   genvar b_col;
@@ -86,8 +87,8 @@ module systolic_array (
         assign bias_skewed[0] = bias_data[0];
         assign bias_valid_skewed[0] = bias_valid;
       end else begin : gen_bias_skew_main
-        int32_t bias_pipe[b_col];
-        logic   vld_pipe [b_col];
+        bias_t bias_pipe[b_col];
+        logic  vld_pipe [b_col];
 
         always_ff @(posedge clk) begin
           if (rst) begin
@@ -111,14 +112,14 @@ module systolic_array (
   // Systolic interconnect
 
   // Horizontal wires
-  int8_t  act_h         [  ARRAY_SIZE][ARRAY_SIZE+1];
-  logic   act_h_valid   [  ARRAY_SIZE][ARRAY_SIZE+1];
+  act_t    act_h         [  ARRAY_SIZE][ARRAY_SIZE+1];
+  logic    act_h_valid   [  ARRAY_SIZE][ARRAY_SIZE+1];
   // Vertical wires
-  int8_t  weight_v      [ARRAY_SIZE+1][  ARRAY_SIZE];
-  logic   weight_v_valid[ARRAY_SIZE+1][  ARRAY_SIZE];
+  weight_t weight_v      [ARRAY_SIZE+1][  ARRAY_SIZE];
+  logic    weight_v_valid[ARRAY_SIZE+1][  ARRAY_SIZE];
 
-  int32_t acc_v         [ARRAY_SIZE+1][  ARRAY_SIZE];
-  logic   acc_v_valid   [ARRAY_SIZE+1][  ARRAY_SIZE];
+  acc_t    acc_v         [ARRAY_SIZE+1][  ARRAY_SIZE];
+  logic    acc_v_valid   [ARRAY_SIZE+1][  ARRAY_SIZE];
 
 
   // Drive boundaries with internally skewed input lines
@@ -165,8 +166,8 @@ module systolic_array (
   endgenerate
 
   //Output deskewing: column c of output is delayed by ARRAY_SIZE - 1 - c
-  int32_t deskewed_out[ARRAY_SIZE];
-  logic   deskewed_vld[ARRAY_SIZE];
+  acc_vec_t deskewed_out;
+  logic deskewed_vld[ARRAY_SIZE];
 
   genvar d_col;
   generate
@@ -177,8 +178,8 @@ module systolic_array (
         assign deskewed_out[d_col] = acc_v[ARRAY_SIZE][d_col];
         assign deskewed_vld[d_col] = acc_v_valid[ARRAY_SIZE][d_col];
       end else begin : gen_output_skew_main
-        int32_t out_pipe[out_delay];
-        logic   vld_pipe[out_delay];
+        acc_t out_pipe[out_delay];
+        logic vld_pipe[out_delay];
 
         always_ff @(posedge clk) begin
           if (rst) begin

@@ -6,27 +6,27 @@ module pe (
     input logic rst,
 
     // Weight loading chain: flows south during configuration
-    input  int8_t weight_in,
-    input  logic  weight_in_valid,
-    output int8_t weight_out,
-    output logic  weight_out_valid,
+    input weight_t weight_in,
+    input logic weight_in_valid,
+    output weight_t weight_out,
+    output logic weight_out_valid,
 
     // If hold, the weights will be stored in the PE, and not flow out
     input logic weight_hold,
 
     // Activation stream: flows east during computation
-    input  int8_t act_in,
-    input  logic  act_in_valid,
-    output int8_t act_out,
-    output logic  act_out_valid,
+    input  act_t act_in,
+    input  logic act_in_valid,
+    output act_t act_out,
+    output logic act_out_valid,
 
     // Partial sum stream: flows south during computation
-    input  int32_t acc_in,
-    input  logic   acc_in_valid,
-    output int32_t acc_out,
-    output logic   acc_out_valid
+    input  acc_t acc_in,
+    input  logic acc_in_valid,
+    output acc_t acc_out,
+    output logic acc_out_valid
 );
-  int8_t weight_reg;
+  weight_t weight_reg;
   always_ff @(posedge clk) begin
     if (rst) begin
       weight_reg       <= '0;
@@ -169,7 +169,7 @@ module pe (
   );
 
 
-  assign acc_out = dsp_p[ACC_WIDTH-1:0];
+  assign acc_out = dsp_p[DTYPE_ACC_W-1:0];
 
 `else
 
@@ -177,11 +177,12 @@ module pe (
   //   Stage 0 (AREG/BREG/CREG): latch inputs
   //   Stage 1 (MREG):      multiply
   //   Stage 2 (PREG):      accumulate
-  int8_t stage0_a, stage0_b;
-  int32_t stage0_c;
-  int32_t stage1_c;
-  int16_t stage1_m;
-  int32_t stage2_p;
+  weight_t stage0_a;
+  act_t stage0_b;
+  acc_t stage0_c;
+  acc_t stage1_c;
+  product_t stage1_m;
+  acc_t stage2_p;
 
   always_ff @(posedge clk) begin
 
@@ -199,14 +200,14 @@ module pe (
       stage1_m <= '0;
       stage1_c <= '0;
     end else if (compute_enable_d) begin
-      stage1_m <= int16_t'(stage0_a) * int16_t'(stage0_b);
+      stage1_m <= product_t'(stage0_a) * product_t'(stage0_b);
       stage1_c <= stage0_c;
     end
 
     if (rst) begin
       stage2_p <= '0;
     end else if (compute_enable_d_d) begin
-      stage2_p <= stage1_c + int32_t'(stage1_m);
+      stage2_p <= stage1_c + acc_t'(stage1_m);
     end
   end
 
@@ -215,8 +216,8 @@ module pe (
 `endif
 
   // quickly pump out the act_out, so can move fast in east direction
-  int8_t act_reg;
-  logic  act_valid_reg;
+  act_t act_reg;
+  logic act_valid_reg;
   always_ff @(posedge clk) begin
     act_reg <= rst ? '0 : act_in;
     act_valid_reg <= rst ? '0 : act_in_valid;

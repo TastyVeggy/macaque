@@ -4,19 +4,19 @@ import npu_pkg::*;
 module pe_tb ();
 
   logic clk, rst;
-  int8_t  weight_in;
-  logic   weight_in_valid;
-  int8_t  weight_out;
-  logic   weight_out_valid;
-  logic   weight_hold;
-  int8_t  act_in;
-  logic   act_in_valid;
-  int8_t  act_out;
-  logic   act_out_valid;
-  int32_t acc_in;
-  logic   acc_in_valid;
-  int32_t acc_out;
-  logic   acc_out_valid;
+  weight_t weight_in;
+  logic weight_in_valid;
+  weight_t weight_out;
+  logic weight_out_valid;
+  logic weight_hold;
+  act_t act_in;
+  logic act_in_valid;
+  act_t act_out;
+  logic act_out_valid;
+  acc_t acc_in;
+  logic acc_in_valid;
+  acc_t acc_out;
+  logic acc_out_valid;
 
   pe dut (.*);
 
@@ -28,7 +28,7 @@ module pe_tb ();
     #1;
   endtask
 
-  task automatic load_weight(input int8_t w);
+  task automatic load_weight(input weight_t w);
     weight_hold = 0;
     weight_in = w;
     weight_in_valid = 1;
@@ -37,7 +37,7 @@ module pe_tb ();
     weight_in = 0;
   endtask
 
-  task automatic drive_pe(input int8_t a, input int32_t c);
+  task automatic drive_pe(input act_t a, input acc_t c);
     weight_hold = 1;
     act_in = a;
     acc_in = c;
@@ -161,7 +161,7 @@ module pe_tb ();
     repeat (2) tick();
 
     begin
-      automatic int8_t s[5] = '{10, 20, 30, 40, 50};
+      automatic act_t s[5] = '{10, 20, 30, 40, 50};
       for (int i = 0; i < 5; i++) begin
         act_in = s[i];
         act_in_valid = 1;

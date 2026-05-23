@@ -538,7 +538,7 @@ async def test_drain_valid_deasserts(dut):
     # The very next cycle it should deassert (single row, no more data)
     await RisingEdge(dut.clk)
     assert dut.drain_valid.value == 0, (
-        f"drain_valid did not deassert after single-row drain"
+        "drain_valid did not deassert after single-row drain"
     )
     dut._log.info("drain_valid deasserts after last result: PASS")
 

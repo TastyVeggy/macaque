@@ -7,18 +7,19 @@ module systolic_array_tb;
 
   logic clk, rst;
 
-  int8_t  weight_data  [ARRAY_SIZE];
-  logic   weight_valid;
+  weight_vec_t weight_data;
+  logic weight_valid;
 
-  int8_t  act_data     [ARRAY_SIZE];
-  logic   act_valid;
+  act_vec_t act_data;
+  logic act_valid;
 
-  int32_t bias_data    [ARRAY_SIZE];
-  logic   bias_valid;
+  bias_vec_t bias_data;
+  logic bias_valid;
 
-  int32_t drain_data   [ARRAY_SIZE];
-  logic   drain_valid;
-  logic   ready;
+  acc_vec_t drain_data;
+  logic drain_valid;
+
+  logic ready;
 
   systolic_array dut (.*);
 
