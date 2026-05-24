@@ -37,13 +37,26 @@ package npu_pkg;
 
   typedef enum logic [3:0] {
     OP_LOAD_WEIGHT = 4'h0,
-    OP_LOAD_INPUT  = 4'h1,
-    OP_MATMUL      = 4'h2,
-    OP_ACTIVATE    = 4'h3,
-    OP_STORE       = 4'h4,
-    OP_DMA_RD      = 4'h5,
-    OP_DMA_WR      = 4'h6,
-    OP_SYNC        = 4'h7
+    OP_LOAD_BIAS   = 4'h1,
+    OP_LOAD_INPUT  = 4'h2,
+    OP_MATMUL      = 4'h3,
+    OP_ACTIVATE    = 4'h4,
+    OP_STORE       = 4'h5,
+    OP_SYNC        = 4'h6
   } opcode_t;
+
+  // Control register map
+  // All offsets in bytes, 32-bit registers
+  parameter logic [31:0] REG_CTRL = 32'h0000;
+  parameter logic [31:0] REG_STATUS = 32'h0004;
+  parameter logic [31:0] REG_INSTR_ADDR = 32'h0008;
+  parameter logic [31:0] REG_INSTR_LEN = 32'h000C;
+  parameter logic [31:0] REG_PMU_CTRL = 32'h0010;
+  parameter logic [31:0] REG_PMU_CYCLES_LO = 32'h0014;
+  parameter logic [31:0] REG_PMU_CYCLES_HI = 32'h0018;
+  parameter logic [31:0] REG_PMU_COMPUTE = 32'h001C;
+  parameter logic [31:0] REG_PMU_STALL = 32'h0020;
+  parameter logic [31:0] REG_PMU_DMA_BYTES_RD = 32'h0024;
+  parameter logic [31:0] REG_PMU_DMA_BYTES_WR = 32'h0028;
 
 endpackage

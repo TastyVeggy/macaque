@@ -1,27 +1,22 @@
 #pragma once
 
 #include <cstdint>
-
-namespace macaque::common {
-constexpr int kArraySize = 14;
-constexpr int kBramDepth = 1024;
-constexpr int kClkFreqHz = 50'000'000;
-constexpr int kBaudRate = 115'200;
-constexpr int kBitPeriod = kClkFreqHz / kBaudRate;
-
-using Weight = int8_t;
-using Activation = int8_t;
-using Accum = int32_t;
-
+namespace macaque::common::isa {
 enum class Opcode : uint8_t {
-  LoadWeight = 0x0,
-  LoadInput = 0x1,
-  Matmul = 0x2,
-  Activate = 0x3,
-  Store = 0x4,
-  DmaRead = 0x5,
-  DmaWrite = 0x6,
-  Sync = 0x7
+  // [63:60]=0x0 [59:32]=DDR3_addr [31:0]=byte_count
+  LoadWeight = 0x0,  // ddr3 to weight buffer
+  // [63:60]=0x1 [59:32]=DDR3_addr [31:0]=byte_count
+  LoadBias = 0x1,  // ddr3 to bias buffer
+  // [63:60]=0x2 [59:32]=DDR3_addr [31:0]=byte_count
+  LoadInput = 0x2,  // ddr3 to input buffer
+  // [63:60]=0x3 [59:32]=N_rows [31:0]=reserved
+  Matmul = 0x3,
+  // [63:60]=0x4 [59:32]=func [31:0]=reserved
+  Activate = 0x4,
+  // [63:60]=0x5 [59:32]=DDR3_addr [31:0]=byte_count
+  Store = 0x5,  // output buffer to ddr3
+  // [63:60]=0x6  [59:32]=unit_mask [31:0]=reserved
+  Sync = 0x6
 };
 
 // 64-bit instruction word layout:
@@ -45,4 +40,4 @@ struct Instruction {
             static_cast<uint32_t>(word) & 0xFFFF'FFFF};
   }
 };
-} // namespace macaque::common
+}  // namespace macaque::common::isa

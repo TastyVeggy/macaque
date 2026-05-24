@@ -195,7 +195,6 @@ async def test_drain_latency(dut):
 async def test_zero_weights(dut):
     """All-zero weights: output must be zero regardless of activation (no bias)"""
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
-    # await setup_clock(dut)
     await reset(dut)
 
     W = [[0] * ARRAY_SIZE for _ in range(ARRAY_SIZE)]

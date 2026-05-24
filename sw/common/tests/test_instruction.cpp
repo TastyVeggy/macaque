@@ -1,7 +1,8 @@
-#include "macaque/common/types.hpp"
 #include <gtest/gtest.h>
 
-using namespace macaque::common;
+#include "macaque/common/isa.hpp"
+
+using namespace macaque::common::isa;
 
 TEST(InstructionEncoding, RoundtripPreservesAllFields) {
   Instruction original{Opcode::Matmul, 0x00ABCDEF, 0x12345678};

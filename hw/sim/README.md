@@ -8,7 +8,7 @@ To add a new test, create a subfolder in hw/sim/tb/ following this specification
 * XSim Testbench: \<name\>_tb.sv
 * Cocotb Testbench: \<name\>_tb.py
 * List of sources: sources.f (not inclusive of the testbench itself)
-* Optional testbench config: tb.cfg 
+* Testbench config: tb.cfg 
     * TOP: dut for cocotb (default to `TB` passed in make command)
     * SIM: simulator for cocotb (default to verilator)
 ```
