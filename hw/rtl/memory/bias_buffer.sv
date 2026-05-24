@@ -26,9 +26,13 @@ module bias_buffer (
   logic bias_bank_sel_sync;
   logic bias_bank_sel_sa;
 
+  // BRAM read latency
+  logic bias_bank_sel_mux;
+
   always_ff @(posedge clk_sa) begin
     bias_bank_sel_sync <= bias_bank_sel;
     bias_bank_sel_sa   <= bias_bank_sel_sync;
+    bias_bank_sel_mux  <= bias_bank_sel_sa;
   end
 
   generate
@@ -60,7 +64,7 @@ module bias_buffer (
           .rdata_b(rdata1[i])
       );
 
-      assign sa_rdata[i] = bias_bank_sel_sa ? rdata1[i] : rdata0[i];
+      assign sa_rdata[i] = bias_bank_sel_mux ? rdata1[i] : rdata0[i];
 
     end
   endgenerate

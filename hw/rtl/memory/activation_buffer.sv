@@ -26,9 +26,13 @@ module activation_buffer (
   logic act_bank_sel_sync;
   logic act_bank_sel_sa;
 
+  // BRAM read latency
+  logic act_bank_sel_mux;
+
   always_ff @(posedge clk_sa) begin
     act_bank_sel_sync <= act_bank_sel;
     act_bank_sel_sa   <= act_bank_sel_sync;
+    act_bank_sel_mux  <= act_bank_sel_sa;
   end
 
   generate
@@ -60,7 +64,7 @@ module activation_buffer (
           .rdata_b(rdata1[i])
       );
 
-      assign sa_rdata[i] = act_bank_sel_sa ? rdata1[i] : rdata0[i];
+      assign sa_rdata[i] = act_bank_sel_mux ? rdata1[i] : rdata0[i];
     end
   endgenerate
 

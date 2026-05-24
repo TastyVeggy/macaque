@@ -2,6 +2,7 @@ package npu_pkg;
 
   parameter int ARRAY_SIZE = 14;
   parameter int BRAM_DEPTH = 256;
+  parameter int BANK_SEL_SETTLE_CYCLES = 8;
   parameter int SYS_CLK_FREQ = 50_000_000;
   parameter int UART_BAUD_DEFAULT = 115_200;
 

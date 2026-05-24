@@ -26,9 +26,13 @@ module out_buffer (
   logic out_bank_sel_sync;
   logic out_bank_sel_ddr;
 
+  // BRAM read latency
+  logic out_bank_sel_mux;
+
   always_ff @(posedge clk_ddr) begin
     out_bank_sel_sync <= out_bank_sel;
     out_bank_sel_ddr  <= out_bank_sel_sync;
+    out_bank_sel_mux  <= out_bank_sel_ddr;
   end
 
   generate
@@ -60,7 +64,7 @@ module out_buffer (
           .rdata_b(rdata1[i])
       );
 
-      assign dma_rdata[i] = out_bank_sel_ddr ? rdata0[i] : rdata1[i];
+      assign dma_rdata[i] = out_bank_sel_mux ? rdata0[i] : rdata1[i];
 
     end
   endgenerate
