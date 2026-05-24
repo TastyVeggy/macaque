@@ -21,12 +21,23 @@ hw/sim/tb/
 ```
 ## Running Simulations
 
+### Environment Setup
+The simulation scripts rely on Xilinx Vivado tools.
+* Recommended: source your Vivado settings64.sh before running. This sets the `XILINX_VIVADO` enviornment variable automatically. You will likely need it to run vivado anyways.
+* Fallback: If the variable is not found, the script defaults to:
+    `/opt/Xilinx/Vivado/2025.2` (as can be found in `run_sim.sh`)
+
+#### Prerequisites
+- Vivado ML Edition v2025.2 (Artix-7 device support) for xsim
+- Python 3.12 with cocotb, verilator 5.048
+
 The simulation environment automatically detects available tests based on the file extensions present in the tb/ subfolders.
 
 Run make without arguments to see a menu of detected testbenches and their supported modes:
 ```bash
 make
 ```
+
 
 ### Running a specific simulation
 Use the `TB` variable to specify the folder name and `MODE` to choose the engine.
@@ -41,13 +52,6 @@ Python (Cocotb):
 make TB=systolic_array MODE=cocotb
 ```
 
-## Environment Setup
-The simulation scripts rely on Xilinx Vivado tools.
-* Recommended: source your Vivado settings64.sh before running. This sets the `XILINX_VIVADO` enviornment variable automatically. You will likely need it to run vivado anyways.
-* Fallback: If the variable is not found, the script defaults to:
-    `/opt/Xilinx/Vivado/2025.2` (as can be found in `run_sim.sh`)
-
-Cocotb require Python and cocotb
 
 ## Cleanup
 ```bash
