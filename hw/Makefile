@@ -31,7 +31,7 @@ endef
 SRCS := $(shell find $(RTL_DIR) -name "*.sv" -o -name "*.v")
 XDC  := $(shell find $(CONSTRS) -name "*.xdc")
 
-.PHONY: all synth impl bitstream program project validate tidy clean
+.PHONY: all synth impl bitstream program project validate sim tidy clean
 
 all: program
 
@@ -71,8 +71,8 @@ program: $(PROGRAM_STAMP)
 project:
 	$(VIV_BIN) -source $(SCRIPT_DIR)/project.tcl -tclargs $(ROOT_DIR)
 
-sim_hw:
-	$(MAKE) sim_hw -C sim TB=$(TB) MODE=$(MODE)
+sim:
+	$(MAKE) -C sim 
 
 validate:
 	$(call check_top)

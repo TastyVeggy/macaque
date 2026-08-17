@@ -30,9 +30,12 @@ module systolic_array_tb;
   typedef int mat_t[ARRAY_SIZE][ARRAY_SIZE];
   typedef int vec_t[ARRAY_SIZE];
 
+  int pass_cnt, fail_cnt;
+
   `define ASSERT(cond, msg) \
   do begin \
     if (!(cond)) begin \
+      fail_cnt++; \
       $error("FAIL  %s  (@%0t)", msg, $time); \
       $finish; \
     end \
@@ -156,6 +159,7 @@ module systolic_array_tb;
               "%s  row=%0d col=%0d  expected=%0d  got=%0d", tag, i, c, exp[c], results[i][c]));
     end
     $display("PASS  %s", tag);
+    pass_cnt++;
   endtask
 
   task automatic test_drain_latency();
@@ -576,6 +580,8 @@ module systolic_array_tb;
     weight_valid = 0;
     act_valid    = 0;
     bias_valid   = 0;
+    pass_cnt     = 0;
+    fail_cnt     = 0;
     foreach (weight_data[i]) weight_data[i] = '0;
     foreach (act_data[i]) act_data[i] = '0;
     foreach (bias_data[i]) bias_data[i] = '0;
@@ -602,7 +608,7 @@ module systolic_array_tb;
     test_large_batch();
     test_reset_clears_pipeline();
     test_random_stress();
-    $display("All Passed");
+    $display("\nResult: %0d PASS  %0d FAIL", pass_cnt, fail_cnt);
     $finish;
   end
 

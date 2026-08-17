@@ -8,19 +8,19 @@ PRESET ?= debug
 
 help:
 	@echo "Targets:"
-	@echo "  hw                            - Build the hardware (Synthesis, Impl, Bitstream)"
-	@echo "  hw TOP=x                      - Build the hardware with specified top module"
-	@echo "  sim_hw TB=x MODE=cocotb|xsim  - Simulate hardware"
-	@echo "  sw                            - Build the software stack"
-	@echo "  test_sw                       - Build and run sw unit tests"
-	@echo "  clean                         - Fast clean (keep compiled dependencies)"
-	@echo "  distclean                     - Full clean"
+	@echo "  hw         - Build the hardware (Synthesis, Impl, Bitstream)"
+	@echo "  hw TOP=x   - Build the hardware with specified top module"
+	@echo "  sim_hw     - Simulate hardware"
+	@echo "  sw         - Build the software stack"
+	@echo "  test_sw    - Build and run sw unit tests"
+	@echo "  clean      - Fast clean (keep compiled dependencies)"
+	@echo "  distclean  - Full clean"
 
 hw: 
 	$(MAKE) -C hw TOP=$(TOP)
 
 sim_hw:
-	$(MAKE) sim_hw -C hw/sim TB=$(TB) MODE=$(MODE)
+	$(MAKE) -C hw/sim 
 
 sw:
 	$(MAKE) -C sw PRESET=$(PRESET)
