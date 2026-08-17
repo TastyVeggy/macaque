@@ -142,12 +142,24 @@ module axi_slave_ctrl_regs #(
     end
   end
 
-  assign npu_start  = reg_ctrl[0];
+  logic npu_start_pulse;
+  logic pmu_clear_pulse;
+  always_ff @(posedge S_AXI_ACLK) begin
+    if (!S_AXI_ARESETN) begin
+      npu_start_pulse <= 1'b0;
+      pmu_clear_pulse <= 1'b0;
+    end else begin
+      npu_start_pulse <= (wr_en && wr_addr[AddrLSB+AddrBits-1:AddrLSB] == 4'h0 && S_AXI_WDATA[0]);
+      pmu_clear_pulse <= (wr_en && wr_addr[AddrLSB+AddrBits-1:AddrLSB] == 4'h4 && S_AXI_WDATA[1]);
+    end
+  end
+  assign npu_start  = npu_start_pulse;
+  assign pmu_clear  = pmu_clear_pulse;
+
   assign npu_reset  = reg_ctrl[1];
   assign instr_addr = reg_instr_addr;
   assign instr_len  = reg_instr_len;
   assign pmu_enable = reg_pmu_ctrl[0];
-  assign pmu_clear  = reg_pmu_ctrl[1];
 
   logic [C_S_AXI_ADDR_WIDTH-1:0] rd_addr_lat;
 

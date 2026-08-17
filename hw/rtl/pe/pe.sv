@@ -81,7 +81,7 @@ module pe (
     end
   end
 
-`ifdef SYNTHESIS
+`ifndef VERILATOR
 
   logic [29:0] dsp_a;
   logic [17:0] dsp_b;
