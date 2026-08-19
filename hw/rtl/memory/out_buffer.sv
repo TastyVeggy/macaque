@@ -8,16 +8,21 @@ module out_buffer (
 
     input  logic                rd_re,
     input  npu_pkg::bram_addr_t rd_raddr,
+    input  logic                rd_sel,
     output npu_pkg::acc_vec_t   rd_rdata,
 
     // Bank select (clk_sa domain)
     // out_bank_sel=0: array drains bank0, ACTIVATE reads bank1
     // out_bank_sel=1: array drains bank1, ACTIVATE reads bank0
+    // rd_sel then invert or xor this
     input logic out_bank_sel
 );
 
   npu_pkg::acc_vec_t rdata0;
   npu_pkg::acc_vec_t rdata1;
+
+  logic read_bank;
+  assign read_bank = rd_sel ? out_bank_sel : ~out_bank_sel;
 
   generate
     for (genvar i = 0; i < npu_pkg::ARRAY_SIZE; i++) begin : gen_col
@@ -30,7 +35,7 @@ module out_buffer (
           .addr_a (sa_waddr),
           .wdata_a(sa_wdata[i]),
           .clk_b  (clk_sa),
-          .re_b   (rd_re & (out_bank_sel == 1'b1)),
+          .re_b   (rd_re & (read_bank == 1'b0)),
           .addr_b (rd_raddr),
           .rdata_b(rdata0[i])
       );
@@ -43,12 +48,12 @@ module out_buffer (
           .addr_a (sa_waddr),
           .wdata_a(sa_wdata[i]),
           .clk_b  (clk_sa),
-          .re_b   (rd_re & (out_bank_sel == 1'b0)),
+          .re_b   (rd_re & (read_bank == 1'b1)),
           .addr_b (rd_raddr),
           .rdata_b(rdata1[i])
       );
 
-      assign rd_rdata[i] = out_bank_sel ? rdata0[i] : rdata1[i];
+      assign rd_rdata[i] = (read_bank == 1'b0) ? rdata0[i] : rdata1[i];
 
     end
   endgenerate

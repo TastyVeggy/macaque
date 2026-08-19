@@ -699,3 +699,41 @@ async def test_random_stress(dut):
         )
 
     dut._log.info(f"Random stress ({NUM_TRIALS} trials): PASS")
+
+
+@cocotb.test()
+async def test_tiled_matmul_accumulate(dut):
+    """acc_mode=1 (tiled matmul) semantics: out = previous_partial + A*W, no bias.
+
+    Tile 1 (acc_mode=0): O0 = B0 + A0*W0   (accumulator seed = bias)
+    Tile 2 (acc_mode=1): O1 = O0 + A1*W1   (accumulator seed = O0 partial sums)
+    """
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    await reset(dut)
+
+    N = 4
+    W0 = rand_matrix(ARRAY_SIZE, ARRAY_SIZE, lo=-8, hi=8)
+    W1 = rand_matrix(ARRAY_SIZE, ARRAY_SIZE, lo=-8, hi=8)
+    A0 = [rand_vec(ARRAY_SIZE, lo=-8, hi=8) for _ in range(N)]
+    A1 = [rand_vec(ARRAY_SIZE, lo=-8, hi=8) for _ in range(N)]
+    B0 = rand_vec(ARRAY_SIZE, lo=-200, hi=200)
+
+    # Tile 1: seed = bias (acc_mode=0)
+    await load_weights(dut, W0)
+    partial = await stream_n_and_collect(dut, A0, bias_rows=[B0] * N)
+    expected_partial = ref_matmul(W0, A0, [B0] * N)
+    assert partial == expected_partial, (
+        f"Tile 1 (acc_mode=0) mismatch: expected {expected_partial}, got {partial}"
+    )
+
+    # Tile 2: seed = tile-1 partial sums (acc_mode=1 accumulate)
+    await load_weights(dut, W1)
+    result = await stream_n_and_collect(dut, A1, bias_rows=partial)
+    expected = ref_matmul(W1, A1, partial)
+    assert result == expected, (
+        f"Tile 2 (acc_mode=1) accumulate mismatch:\n"
+        f"  W1={W1}\n  A1={A1}\n  partial={partial}\n"
+        f"  expected={expected}\n  got={result}"
+    )
+
+    dut._log.info("Tiled matmul accumulate (acc_mode=0 then acc_mode=1): PASS")

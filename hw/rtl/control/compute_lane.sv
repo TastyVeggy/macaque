@@ -44,6 +44,10 @@ module compute_lane (
     output logic                bb_re,
     output npu_pkg::bram_addr_t bb_raddr,
 
+    // Out buffer partial-sum feedback read (acc_mode=1)
+    output logic                ob_fb_re,
+    output npu_pkg::bram_addr_t ob_fb_raddr,
+
     // ACTIVATE / STORE
     output logic        activate_req,
     input  logic        activate_done,
@@ -114,6 +118,8 @@ module compute_lane (
       ab_raddr                 <= '0;
       bb_re                    <= '0;
       bb_raddr                 <= '0;
+      ob_fb_re                 <= '0;
+      ob_fb_raddr              <= '0;
       activate_req             <= '0;
       store_req                <= '0;
       ddr3_addr                <= '0;
@@ -147,6 +153,7 @@ module compute_lane (
       weight_valid             <= '0;
       act_valid                <= '0;
       bias_valid               <= '0;
+      ob_fb_re                 <= '0;
       matmul_start             <= '0;
       activate_req             <= '0;
       store_req                <= '0;
@@ -164,8 +171,6 @@ module compute_lane (
             case (d_comp.opcode)
 
               npu_pkg::OP_MATMUL: begin
-                // K-tiling (acc_mode=1) is NOT yet implemented  (TODO)
-                error           <= d_comp.acc_mode;
                 cur_tile_params <= d_comp.tile_params;
                 cur_acc_mode    <= d_comp.acc_mode;
                 fifo_pop        <= '1;
@@ -181,6 +186,7 @@ module compute_lane (
                 act_scale_m     <= d_act.act_scale_m;
                 act_scale_shift <= d_act.act_scale_shift;
                 act_func        <= d_act.act_func;
+                out_bank_sel    <= ~out_bank_sel;
                 state           <= COMP_ACTIVATE_WAIT;
               end
 
@@ -214,7 +220,8 @@ module compute_lane (
         COMP_MATMUL_WAIT: begin
           busy_r <= '1;
           // Gate on dep_tracker: the DMA-loaded bank (~bank_sel) must be LOADED.
-          if (weight_rdy && act_rdy && bias_rdy) begin
+          // bias only needed for first k-tile (acc_mode = 0), subsequent will seed from out buffer
+          if (weight_rdy && act_rdy && (cur_acc_mode ? 1'b1 : bias_rdy)) begin
             comp_matmul_start_notify <= '1;
             weight_bank_sel          <= ~weight_bank_sel;
             act_bank_sel             <= ~act_bank_sel;
@@ -251,12 +258,16 @@ module compute_lane (
           ab_raddr   <= al_count;
           bb_re      <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
           bb_raddr   <= al_count;
+          ob_fb_re    <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) &&
+                         cur_acc_mode;
+          ob_fb_raddr <= al_count;
           act_valid  <= (al_count > 0);
           bias_valid <= (al_count > 0);
 
           if (al_count == cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) begin
             ab_re    <= 1'b0;
             bb_re    <= 1'b0;
+            ob_fb_re <= 1'b0;
             al_count <= '0;
             state    <= COMP_WAIT_DRAIN;
           end else begin
@@ -270,7 +281,6 @@ module compute_lane (
           if (drain_done && !matmul_done) begin
             drain_done               <= 1'b0;
             comp_matmul_drain_notify <= '1;
-            out_bank_sel             <= ~out_bank_sel;
             state                    <= COMP_IDLE;
           end
         end

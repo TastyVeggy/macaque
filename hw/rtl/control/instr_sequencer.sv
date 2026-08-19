@@ -50,6 +50,8 @@ module instr_sequencer (
     output npu_pkg::bram_addr_t ab_raddr,
     output logic                bb_re,
     output npu_pkg::bram_addr_t bb_raddr,
+    output logic                ob_fb_re,
+    output npu_pkg::bram_addr_t ob_fb_raddr,
 
     // Bank select outputs
     output logic weight_bank_sel,
@@ -206,6 +208,8 @@ module instr_sequencer (
       .ab_raddr                (ab_raddr),
       .bb_re                   (bb_re),
       .bb_raddr                (bb_raddr),
+      .ob_fb_re                (ob_fb_re),
+      .ob_fb_raddr             (ob_fb_raddr),
       .activate_req            (activate_req),
       .activate_done           (activate_done),
       .act_scale_m             (act_scale_m),
