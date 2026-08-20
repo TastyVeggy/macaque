@@ -49,12 +49,12 @@ module compute_lane (
     output npu_pkg::bram_addr_t ob_fb_raddr,
 
     // ACTIVATE / STORE
-    output logic        activate_req,
-    input  logic        activate_done,
-    output logic        store_req,
-    input  logic        store_done,
-    output logic [27:0] ddr3_addr,
-    output logic [15:0] byte_count,
+    output logic                               activate_req,
+    input  logic                               activate_done,
+    output logic                               store_req,
+    input  logic                               store_done,
+    output logic [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
+    output logic [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
 
     // ACTIVATE requantize parameters
     output logic               [27:0] act_scale_m,
@@ -83,31 +83,31 @@ module compute_lane (
   assign d_comp = npu_pkg::decode_instr(fifo_data);
 
   typedef enum logic [3:0] {
-    COMP_IDLE,
-    COMP_FETCH,
-    COMP_MATMUL_WAIT,
-    COMP_WEIGHT_LOAD,
-    COMP_ACT_FEED,
-    COMP_WAIT_DRAIN,
-    COMP_ACTIVATE_WAIT,
-    COMP_STORE_WAIT,
-    COMP_SYNC_WAIT,
-    COMP_HALT
-  } comp_state_t;
+    IDLE,
+    FETCH,
+    MATMUL_WAIT,
+    WEIGHT_LOAD,
+    ACT_FEED,
+    WAIT_DRAIN,
+    ACTIVATE_WAIT,
+    STORE_WAIT,
+    SYNC_WAIT,
+    HALT
+  } state_t;
 
-  comp_state_t                                  state;
+  state_t                                  state;
 
-  logic        [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] wl_count;
-  logic        [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] al_count;
-  logic                                         drain_done;
+  logic   [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] wl_count;
+  logic   [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] al_count;
+  logic                                    drain_done;
 
   // Latched instruction fields consumed after the FIFO pop.
-  logic        [                          11:0] cur_tile_params;
-  logic                                         cur_acc_mode;
+  logic   [                          11:0] cur_tile_params;
+  logic                                    cur_acc_mode;
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      state                    <= COMP_IDLE;
+      state                    <= IDLE;
       fifo_pop                 <= '0;
       weight_valid             <= '0;
       act_valid                <= '0;
@@ -148,7 +148,6 @@ module compute_lane (
       cur_acc_mode             <= '0;
 
     end else begin
-      // Defaults
       fifo_pop                 <= '0;
       weight_valid             <= '0;
       act_valid                <= '0;
@@ -165,7 +164,7 @@ module compute_lane (
 
       case (state)
 
-        COMP_IDLE: begin
+        IDLE: begin
           if (!fifo_empty) begin
             busy_r <= '1;
             case (d_comp.opcode)
@@ -174,7 +173,7 @@ module compute_lane (
                 cur_tile_params <= d_comp.tile_params;
                 cur_acc_mode    <= d_comp.acc_mode;
                 fifo_pop        <= '1;
-                state           <= COMP_MATMUL_WAIT;
+                state           <= MATMUL_WAIT;
               end
 
               npu_pkg::OP_ACTIVATE: begin
@@ -187,7 +186,7 @@ module compute_lane (
                 act_scale_shift <= d_act.act_scale_shift;
                 act_func        <= d_act.act_func;
                 out_bank_sel    <= ~out_bank_sel;
-                state           <= COMP_ACTIVATE_WAIT;
+                state           <= ACTIVATE_WAIT;
               end
 
               npu_pkg::OP_STORE: begin
@@ -197,7 +196,7 @@ module compute_lane (
                   store_req  <= '1;
                   ddr3_addr  <= d_comp.ddr3_addr;
                   byte_count <= d_comp.byte_count;
-                  state      <= COMP_STORE_WAIT;
+                  state      <= STORE_WAIT;
                 end
                 // else: DMA is issuing a load this cycle so stall
               end
@@ -205,7 +204,7 @@ module compute_lane (
               npu_pkg::OP_SYNC: begin
                 fifo_pop     <= '1;
                 sync_reached <= '1;
-                state        <= COMP_SYNC_WAIT;
+                state        <= SYNC_WAIT;
               end
 
               default: begin
@@ -216,8 +215,7 @@ module compute_lane (
           end
         end
 
-        // ----------------------------------------------------------
-        COMP_MATMUL_WAIT: begin
+        MATMUL_WAIT: begin
           busy_r <= '1;
           // Gate on dep_tracker: the DMA-loaded bank (~bank_sel) must be LOADED.
           // bias only needed for first k-tile (acc_mode = 0), subsequent will seed from out buffer
@@ -230,12 +228,12 @@ module compute_lane (
             al_count                 <= '0;
             acc_mode                 <= cur_acc_mode;
             tile_params              <= cur_tile_params;
-            state                    <= COMP_WEIGHT_LOAD;
+            state                    <= WEIGHT_LOAD;
           end
           // else: stall until buffers are loaded
         end
 
-        COMP_WEIGHT_LOAD: begin
+        WEIGHT_LOAD: begin
           busy_r <= '1;
           matmul_start <= (wl_count == 0);
           wb_re    <= 1'b1;
@@ -245,23 +243,22 @@ module compute_lane (
           if (wl_count == npu_pkg::ARRAY_SIZE[npu_pkg::DTYPE_BRAM_ADDR_W-1:0]) begin
             wb_re    <= 1'b0;
             wl_count <= '0;
-            state    <= COMP_ACT_FEED;
+            state    <= ACT_FEED;
           end else begin
             wl_count <= wl_count + 1;
           end
         end
 
-        COMP_ACT_FEED: begin
-          busy_r     <= '1;
+        ACT_FEED: begin
+          busy_r <= '1;
           mac_active <= '1;
-          ab_re      <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
-          ab_raddr   <= al_count;
-          bb_re      <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
-          bb_raddr   <= al_count;
-          ob_fb_re    <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) &&
-                         cur_acc_mode;
+          ab_re <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
+          ab_raddr <= al_count;
+          bb_re <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
+          bb_raddr <= al_count;
+          ob_fb_re <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) && cur_acc_mode;
           ob_fb_raddr <= al_count;
-          act_valid  <= (al_count > 0);
+          act_valid <= (al_count > 0);
           bias_valid <= (al_count > 0);
 
           if (al_count == cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) begin
@@ -269,48 +266,48 @@ module compute_lane (
             bb_re    <= 1'b0;
             ob_fb_re <= 1'b0;
             al_count <= '0;
-            state    <= COMP_WAIT_DRAIN;
+            state    <= WAIT_DRAIN;
           end else begin
             al_count <= al_count + 1;
           end
         end
 
-        COMP_WAIT_DRAIN: begin
+        WAIT_DRAIN: begin
           busy_r <= '1;
           if (matmul_done) drain_done <= 1'b1;
           if (drain_done && !matmul_done) begin
             drain_done               <= 1'b0;
             comp_matmul_drain_notify <= '1;
-            state                    <= COMP_IDLE;
+            state                    <= IDLE;
           end
         end
 
-        COMP_ACTIVATE_WAIT: begin
+        ACTIVATE_WAIT: begin
           busy_r <= '1;
           if (activate_done) begin
             quant_bank_sel <= ~quant_bank_sel;
-            state          <= COMP_IDLE;
+            state          <= IDLE;
           end
         end
 
-        COMP_STORE_WAIT: begin
+        STORE_WAIT: begin
           busy_r <= '1;
           if (store_done) begin
-            state <= COMP_IDLE;
+            state <= IDLE;
           end
         end
 
-        COMP_SYNC_WAIT: begin
+        SYNC_WAIT: begin
           busy_r <= '1;
           if (sync_release) begin
-            state <= COMP_IDLE;
+            state <= IDLE;
           end
         end
 
-        COMP_HALT: begin
+        HALT: begin
         end
 
-        default: state <= COMP_IDLE;
+        default: state <= IDLE;
 
       endcase
     end

@@ -27,13 +27,13 @@ module fetch_unit (
 );
 
   typedef enum logic [1:0] {
-    FET_IDLE,
-    FET_ADDR,
-    FET_WAIT,
-    FET_PUSH
-  } fet_state_t;
+    IDLE,
+    ADDR,
+    WAIT,
+    PUSH
+  } state_t;
 
-  fet_state_t state;
+  state_t state;
   logic [31:0] pc;
   logic [31:0] prog_end;
 
@@ -45,7 +45,7 @@ module fetch_unit (
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      state          <= FET_IDLE;
+      state          <= IDLE;
       pc             <= '0;
       im_addr        <= '0;
       dma_push       <= '0;
@@ -61,31 +61,31 @@ module fetch_unit (
 
       case (state)
 
-        FET_IDLE: begin
+        IDLE: begin
           if (start) begin
             halt  <= '0; // new program clears the halt latch
             pc    <= instr_base;
-            state <= FET_ADDR;
+            state <= ADDR;
           end
         end
 
-        FET_ADDR: begin
+        ADDR: begin
           if (pc >= prog_end) begin
             halt  <= '1;
-            state <= FET_IDLE;
+            state <= IDLE;
           end else begin
             im_addr <= pc;
-            state   <= FET_WAIT;
+            state   <= WAIT;
           end
         end
 
         // BRAM is capturing instr_mem[pc] now so im_data updates next cycle.
-        FET_WAIT: begin
+        WAIT: begin
           busy  <= '1;
-          state <= FET_PUSH;
+          state <= PUSH;
         end
 
-        FET_PUSH: begin
+        PUSH: begin
           busy <= '1;
           case (d_instr.opcode)
 
@@ -94,7 +94,7 @@ module fetch_unit (
                 dma_push      <= '1;
                 dma_push_data <= im_data;
                 pc            <= pc + 8;
-                state         <= FET_ADDR;
+                state         <= ADDR;
               end
               // else: stall
             end
@@ -104,7 +104,7 @@ module fetch_unit (
                 comp_push      <= '1;
                 comp_push_data <= im_data;
                 pc             <= pc + 8;
-                state          <= FET_ADDR;
+                state          <= ADDR;
               end
               // else: stall
             end
@@ -118,7 +118,7 @@ module fetch_unit (
                 comp_push      <= '1;
                 comp_push_data <= im_data;
                 pc             <= pc + 8;
-                state          <= FET_ADDR;
+                state          <= ADDR;
               end
               // else: stall
             end
@@ -126,13 +126,13 @@ module fetch_unit (
             default: begin
               // treat as halt
               halt  <= '1;
-              state <= FET_IDLE;
+              state <= IDLE;
             end
 
           endcase
         end
 
-        default: state <= FET_IDLE;
+        default: state <= IDLE;
 
       endcase
     end

@@ -33,15 +33,15 @@ module instr_sequencer (
     output npu_pkg::act_func_t        act_func,
 
     // LOAD/STORE: to DMA
-    output logic        load_req,
-    output logic        store_req,
-    output logic [ 2:0] load_target,
-    output logic [27:0] ddr3_addr,
-    output logic [15:0] byte_count,
-    output logic        acc_mode,
+    output logic                  load_req,
+    output logic                  store_req,
+    output npu_pkg::buffer_type_t load_target,
+    output logic [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
+    output logic [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
+    output logic                  acc_mode,
     output logic [11:0] tile_params,
-    input  logic        load_done,
-    input  logic        store_done,
+    input  logic                  load_done,
+    input  logic                  store_done,
 
     // Buffer read control during MATMUL
     output logic                wb_re,
@@ -90,9 +90,9 @@ module instr_sequencer (
   logic                  dma_load_bank;
   logic sync_reached_dma, sync_release;
   logic        dma_load_req;
-  logic [ 2:0] dma_load_target;
-  logic [27:0] dma_ddr3_addr;
-  logic [15:0] dma_byte_count;
+  npu_pkg::buffer_type_t dma_load_target;
+  logic [npu_pkg::ISA_DDR_ADDR_W-1:0] dma_ddr3_addr;
+  logic [npu_pkg::ISA_BYTE_CNT_W-1:0] dma_byte_count;
 
   // Compute lane
   logic        comp_lane_busy;
@@ -100,8 +100,8 @@ module instr_sequencer (
   logic        comp_error;
   logic comp_matmul_start_notify, comp_matmul_drain_notify;
   logic        comp_store_req;
-  logic [27:0] comp_ddr3_addr;
-  logic [15:0] comp_byte_count;
+  logic [npu_pkg::ISA_DDR_ADDR_W-1:0] comp_ddr3_addr;
+  logic [npu_pkg::ISA_BYTE_CNT_W-1:0] comp_byte_count;
   logic        sync_reached_comp;
 
   // Bank selects: owned by DMA lane

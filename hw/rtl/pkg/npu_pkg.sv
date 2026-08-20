@@ -1,5 +1,4 @@
 package npu_pkg;
-
   parameter int ARRAY_SIZE = 14;
   parameter int BRAM_DEPTH = 256;
   parameter int BANK_SEL_SETTLE_CYCLES = 8;
@@ -23,7 +22,6 @@ package npu_pkg;
   typedef act_t act_vec_t[ARRAY_SIZE];
   typedef bias_t bias_vec_t[ARRAY_SIZE];
   typedef acc_t acc_vec_t[ARRAY_SIZE];  // essentially output
-
 
   // BRAM
   parameter int DTYPE_BRAM_ADDR_W = $clog2(BRAM_DEPTH);
@@ -95,31 +93,31 @@ package npu_pkg;
 
   // Named view of an ACTIVATE instruction. These are the SAME
   // bits as the generic decoded_instr_t fields, just given opcode-appropriate
-  // names. decode_act_instr() extracts them  
+  // names. decode_act_instr() extracts them.
   typedef struct packed {
-    opcode_t        opcode;           // [63:60]
-    logic           acc_mode;         // [59] (unused by ACTIVATE)
-    act_func_t      act_func;         // [58:56] (target)
-    logic [27:0]    act_scale_m;      // [55:28] (ddr3_addr)
-    logic [10:0]    leaky_shift;      // [27:17] (byte_count[15:5]) — per-instruction
-                                      //          leaky slope (α = 2^-leaky_shift).
-                                      //          NOT yet implemented: hardware uses
-                                      //          the global npu_pkg::LEAKY_RELU_SHIFT.
-    logic [ 4:0]    act_scale_shift;  // [16:12] (byte_count[4:0])
-    logic [ 3:0]    reserved;            // [11:8]  (tile_params[11:8]) — reserved/unallocated.
-    logic [ 7:0]    act_num_rows;     // [ 7:0]  (tile_params[7:0])
+    opcode_t     opcode;           // [63:60]
+    logic        acc_mode;         // [59] (unused by ACTIVATE)
+    act_func_t   act_func;         // [58:56] (target)
+    logic [27:0] act_scale_m;      // [55:28] (ddr3_addr)
+    logic [10:0] leaky_shift;      // [27:17] (byte_count[15:5]) — per-instruction
+                                   //          leaky slope (α = 2^-leaky_shift).
+                                   //          NOT yet implemented: hardware uses
+                                   //          the global npu_pkg::LEAKY_RELU_SHIFT.
+    logic [4:0]  act_scale_shift;  // [16:12] (byte_count[4:0])
+    logic [3:0]  reserved;         // [11:8]  (tile_params[11:8]) — reserved/unallocated.
+    logic [7:0]  act_num_rows;     // [ 7:0]  (tile_params[7:0])
   } act_instr_t;
 
   function automatic act_instr_t decode_act_instr(logic [63:0] raw);
     act_instr_t a;
-    a.opcode          = opcode_t'(raw[ISA_OPCODE_L +: ISA_OPCODE_W]);
+    a.opcode          = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
     a.acc_mode        = raw[ISA_ACC_MODE_B];
     a.act_func        = act_func_t'(raw[ISA_TARGET_H:ISA_TARGET_L]);
     a.act_scale_m     = raw[ISA_DDR_ADDR_H:ISA_DDR_ADDR_L];
-    a.leaky_shift     = raw[ISA_BYTE_CNT_H -: 11];
-    a.act_scale_shift = raw[ISA_BYTE_CNT_L +: 5];
-    a.reserved        = raw[ISA_TILE_H -: 4];
-    a.act_num_rows    = raw[ISA_TILE_L +: 8];
+    a.leaky_shift     = raw[ISA_BYTE_CNT_H-:11];
+    a.act_scale_shift = raw[ISA_BYTE_CNT_L+:5];
+    a.reserved        = raw[ISA_TILE_H-:4];
+    a.act_num_rows    = raw[ISA_TILE_L+:8];
     return a;
   endfunction
 
@@ -139,9 +137,9 @@ package npu_pkg;
 
   // Dual-lane sequencer: per-bank slot state for dep_tracker
   typedef enum logic [1:0] {
-    SLOT_EMPTY,    // available for DMA to load
-    SLOT_LOADED,   // DMA finished; ready for compute to read
-    SLOT_BUSY      // compute is reading
+    SLOT_EMPTY,   // available for DMA to load
+    SLOT_LOADED,  // DMA finished; ready for compute to read
+    SLOT_BUSY     // compute is reading
   } slot_state_t;
 
   // Buffer type selector (identifies which of the 3 load targets)
