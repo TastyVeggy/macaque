@@ -23,6 +23,10 @@ package npu_pkg;
   typedef bias_t bias_vec_t[ARRAY_SIZE];
   typedef acc_t acc_vec_t[ARRAY_SIZE];  // essentially output
 
+  // Bytes per lane-packed buffer row (canonical DDR3 <-> buffer layout).
+  parameter int INT8_ROW_BYTES = ARRAY_SIZE * (DTYPE_WEIGHT_W / 8);  // 14 (weight/act/quant)
+  parameter int INT32_ROW_BYTES = ARRAY_SIZE * (DTYPE_BIAS_W / 8);   // 56 (bias/out/acc)
+
   // BRAM
   parameter int DTYPE_BRAM_ADDR_W = $clog2(BRAM_DEPTH);
 
