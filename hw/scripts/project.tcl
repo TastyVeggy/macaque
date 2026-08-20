@@ -8,4 +8,5 @@ add_files [glob_recursive "$rtl_dir"]
 add_files -fileset constrs_1 [glob "$constrs_dir/*.xdc"]
 update_compile_order -fileset sources_1
 
+source [file join [file dirname [info script]] "ip/create_axi_dma.tcl"]
 source [file join [file dirname [info script]] "ip/create_mig.tcl"]
