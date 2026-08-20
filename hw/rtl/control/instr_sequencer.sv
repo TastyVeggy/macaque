@@ -83,11 +83,11 @@ module instr_sequencer (
   logic [63:0] comp_push_data, comp_fifo_data;
 
   // DMA lane
-  logic                                    dma_lane_busy;
-  logic                                    dma_issue;  // DMA would-issue a load this cycle
-  logic                                    dma_load_done_notify;
-  npu_pkg::buffer_type_t                   dma_load_buf_type;
-  logic                                    dma_load_bank;
+  logic                  dma_lane_busy;
+  logic                  dma_issue;  // DMA would-issue a load this cycle
+  logic                  dma_load_done_notify;
+  npu_pkg::buffer_type_t dma_load_buf_type;
+  logic                  dma_load_bank;
   logic sync_reached_dma, sync_release;
   logic        dma_load_req;
   logic [ 2:0] dma_load_target;
