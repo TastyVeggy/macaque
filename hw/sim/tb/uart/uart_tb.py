@@ -8,26 +8,26 @@ BIT_PERIOD_NS = int(1e9 / BAUD_RATE)
 
 
 async def uart_send_byte(dut, byte):
-    dut.rx_pin.value = 0
+    dut.uart_rx.value = 0
     await Timer(BIT_PERIOD_NS, unit="ns")
 
     for i in range(8):
-        dut.rx_pin.value = (byte >> i) & 1
+        dut.uart_rx.value = (byte >> i) & 1
         await Timer(BIT_PERIOD_NS, unit="ns")
 
-    dut.rx_pin.value = 1
+    dut.uart_rx.value = 1
     await Timer(BIT_PERIOD_NS, unit="ns")
 
 
 async def uart_recv_byte(dut):
-    while dut.tx_pin.value == 1:
+    while dut.uart_tx.value == 1:
         await RisingEdge(dut.clk)
     await Timer(BIT_PERIOD_NS // 2, unit="ns")
 
     byte = 0
     for i in range(8):
         await Timer(BIT_PERIOD_NS, unit="ns")
-        bit = int(dut.tx_pin.value)
+        bit = int(dut.uart_tx.value)
         byte |= bit << i
     await Timer(BIT_PERIOD_NS, unit="ns")
     return byte
@@ -38,7 +38,7 @@ async def test_uart_echo(dut):
     cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
 
     dut.rst_n.value = 0
-    dut.rx_pin.value = 1
+    dut.uart_rx.value = 1
     for _ in range(10):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1
