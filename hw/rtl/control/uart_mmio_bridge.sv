@@ -28,6 +28,14 @@ module uart_mmio_bridge #(
     output logic [DataW-1:0] reg_wdata,
     input  logic [DataW-1:0] reg_rdata,
 
+    // Instruction memory
+    output logic                            im_wr_en,
+    output logic [npu_pkg::IMEM_ADDR_W+2:0] im_wr_addr,
+    output logic [               DataW-1:0] im_wr_data,
+    output logic                            im_re,
+    output logic [npu_pkg::IMEM_ADDR_W+2:0] im_rd_addr,
+    input  logic [               DataW-1:0] im_rd_data,
+
     // AXI4 master (single-beat)
     output logic [  IdW-1:0] m_axi_awid,
     output logic [AddrW-1:0] m_axi_awaddr,
@@ -112,17 +120,21 @@ module uart_mmio_bridge #(
 
   typedef enum logic [3:0] {
     IDLE,
-    W_ADDR,    // capture 4 address bytes
-    W_DATA,    // capture DataW/8 data bytes
-    REG_W,     // register write
-    AXI_W_AW,  // write address channel
-    AXI_W_W,   // write data channel
-    AXI_W_B,   // write response channel
-    R_ADDR,    // capture 4 address bytes
-    REG_R,     // register read (simple bus)
-    AXI_R_AR,  // read address channel
-    AXI_R_R,   // read data channel
-    TX         // send response bytes back over UART
+    W_ADDR,       // capture 4 address bytes
+    W_DATA,       // capture DataW/8 data bytes
+    REG_W,        // register write
+    IMEM_W,       // instruction-memory write
+    AXI_W_AW,     // write address channel
+    AXI_W_W,      // write data channel
+    AXI_W_B,      // write response channel
+    R_ADDR,       // capture 4 address bytes
+    R_DECODE,     // address settled; pick reg / imem / axi
+    REG_R,        // register read (simple bus)
+    IMEM_R,       // instruction-memory read (assert im_re)
+    IMEM_R_WAIT,  // bram read latency; data ready next cycle
+    AXI_R_AR,     // read address channel
+    AXI_R_R,      // read data channel
+    TX            // send response bytes back over UART
   } state_t;
   state_t                state;
 
@@ -150,6 +162,8 @@ module uart_mmio_bridge #(
       m_axi_arvalid <= '0;
       m_axi_rready  <= '0;
       reg_we        <= '0;
+      im_wr_en      <= '0;
+      im_re         <= '0;
     end else begin
       tx_valid      <= '0;
       m_axi_awvalid <= '0;
@@ -158,6 +172,8 @@ module uart_mmio_bridge #(
       m_axi_arvalid <= '0;
       m_axi_rready  <= '0;
       reg_we        <= '0;
+      im_wr_en      <= '0;
+      im_re         <= '0;
 
       case (state)
         IDLE: begin
@@ -202,7 +218,9 @@ module uart_mmio_bridge #(
           if (rx_valid) begin
             wdata[byte_cnt*8+:8] <= rx_data;
             if (byte_cnt == ByteCntW'(DataBytes - 1)) begin
-              state <= reg_access ? REG_W : AXI_W_AW;
+              if (reg_access) state <= REG_W;
+              else if (imem_access) state <= IMEM_W;
+              else state <= AXI_W_AW;
             end else begin
               byte_cnt <= byte_cnt + 1'b1;
             end
@@ -211,6 +229,14 @@ module uart_mmio_bridge #(
 
         REG_W: begin
           reg_we   <= 1'b1;
+          resp     <= '0;
+          resp_len <= 4'd1;
+          resp_idx <= '0;
+          state    <= TX;
+        end
+
+        IMEM_W: begin
+          im_wr_en <= 1'b1;
           resp     <= '0;
           resp_len <= 4'd1;
           resp_idx <= '0;
@@ -243,15 +269,36 @@ module uart_mmio_bridge #(
           if (rx_valid) begin
             addr[byte_cnt*8+:8] <= rx_data;
             if (byte_cnt == 3) begin
-              state <= reg_access ? REG_R : AXI_R_AR;
+              state <= R_DECODE;
             end else begin
               byte_cnt <= byte_cnt + 1'b1;
             end
           end
         end
 
+        R_DECODE: begin
+          if (reg_access) state <= REG_R;
+          else if (imem_access) state <= IMEM_R;
+          else state <= AXI_R_AR;
+        end
+
         REG_R: begin
           resp     <= reg_rdata;
+          resp_len <= DataBytes[3:0];
+          resp_idx <= '0;
+          state    <= TX;
+        end
+
+        IMEM_R: begin
+          if (im_re) begin
+            state <= IMEM_R_WAIT;  // bram read in flight; data ready next cycle
+          end else begin
+            im_re <= 1'b1;
+          end
+        end
+
+        IMEM_R_WAIT: begin
+          resp     <= im_rd_data;
           resp_len <= DataBytes[3:0];
           resp_idx <= '0;
           state    <= TX;
@@ -313,11 +360,16 @@ module uart_mmio_bridge #(
   assign m_axi_arprot  = 3'd0;
   assign m_axi_arqos   = 4'd0;
 
-  // register region decode
+  // MMIO region decode
   logic reg_access;
-  assign reg_access = (addr[31:24] == npu_pkg::REG_BASE[31:24]);
-  assign reg_addr   = addr[7:0];
-  assign reg_wdata  = wdata;
+  logic imem_access;
+  assign reg_access  = (addr[31:24] == npu_pkg::REG_BASE[31:24]);
+  assign imem_access = (addr[31:24] == npu_pkg::IMEM_BASE[31:24]);
+  assign reg_addr    = addr[7:0];
+  assign reg_wdata   = wdata;
+  assign im_wr_addr  = addr[npu_pkg::IMEM_ADDR_W+2:0];
+  assign im_rd_addr  = addr[npu_pkg::IMEM_ADDR_W+2:0];
+  assign im_wr_data  = wdata;
 
   wire _unused = &{1'b0, m_axi_bid, m_axi_bresp, m_axi_rid, m_axi_rresp, m_axi_rlast, 1'b0};
 

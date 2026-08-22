@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module ddr3_uart_top (
+module uart_mmio_top (
     input logic clk,
     input logic rst_n,
 
@@ -158,7 +158,21 @@ module ddr3_uart_top (
     rst_sync1 <= ~rst_n;
     rst_sync  <= rst_sync1;
   end
-  wire bridge_rst = rst_sync | ui_clk_sync_rst;
+  wire                             bridge_rst = rst_sync | ui_clk_sync_rst;
+
+  // register bus
+  logic [                     7:0] reg_addr;
+  logic                            reg_we;
+  logic [                    63:0] reg_wdata;
+  logic [                    63:0] reg_rdata;
+
+  // instruction memor
+  logic                            im_wr_en;
+  logic [npu_pkg::IMEM_ADDR_W+2:0] im_wr_addr;
+  logic [                    63:0] im_wr_data;
+  logic                            im_re;
+  logic [npu_pkg::IMEM_ADDR_W+2:0] im_rd_addr;
+  logic [                    63:0] im_rd_data;
 
   uart_mmio_bridge #(
       .ClkFreq(npu_pkg::MIG_UI_CLK_FREQ),
@@ -169,7 +183,16 @@ module ddr3_uart_top (
       .rx_pin       (uart_rx),
       .tx_pin       (uart_tx),
       .status_in    ({init_calib_complete, mmcm_locked}),
-      .reg_rdata    (64'd0),  // no registers in the DDR3 bring-up
+      .reg_addr     (reg_addr),
+      .reg_we       (reg_we),
+      .reg_wdata    (reg_wdata),
+      .reg_rdata    (reg_rdata),
+      .im_wr_en     (im_wr_en),
+      .im_wr_addr   (im_wr_addr),
+      .im_wr_data   (im_wr_data),
+      .im_re        (im_re),
+      .im_rd_addr   (im_rd_addr),
+      .im_rd_data   (im_rd_data),
       .m_axi_awid   (axi_awid),
       .m_axi_awaddr (axi_awaddr),
       .m_axi_awlen  (axi_awlen),
@@ -209,7 +232,56 @@ module ddr3_uart_top (
       .m_axi_rready (axi_rready)
   );
 
-  assign led_calib  = ~init_calib_complete;  // lit = DDR3 calibrated
-  assign led_locked = ~mmcm_locked;  // lit = MIG PLL locked
+  // Control registers
+  logic npu_start, npu_reset, pmu_enable, pmu_clear;
+  logic [31:0] instr_addr, instr_len;
+  ctrl_regs u_ctrl_regs (
+      .clk(ui_clk),
+      .rst(bridge_rst),
+      .reg_addr(reg_addr),
+      .reg_we(reg_we),
+      .reg_wdata(reg_wdata),
+      .reg_rdata(reg_rdata),
+
+      .npu_start (npu_start),
+      .npu_reset (npu_reset),
+      .instr_addr(instr_addr),
+      .instr_len (instr_len),
+      .pmu_enable(pmu_enable),
+      .pmu_clear (pmu_clear),
+
+      .npu_busy(1'b0),
+      .npu_done(1'b0),
+      .npu_error(1'b0),
+      .npu_ready(1'b1),
+      .pmu_cycles(64'd0),
+      .pmu_compute(32'd0),
+      .pmu_stall(32'd0),
+      .pmu_dma_bytes_rd(32'd0),
+      .pmu_dma_bytes_wr(32'd0)
+  );
+
+  // Instruction memory
+  logic [63:0] seq_rdata;
+  imem u_imem (
+      .clk_host(ui_clk),
+      .we(im_wr_en),
+      .waddr(im_wr_addr),
+      .wdata(im_wr_data),
+      .re(im_re),
+      .raddr(im_rd_addr),
+      .rdata(im_rd_data),
+      .clk_seq(ui_clk),
+      .seq_re(1'b0),
+      .seq_raddr('0),
+      .seq_rdata(seq_rdata)
+  );
+
+  // Unused NPU control outputs) + sequencer read data.
+  wire _unused = &{1'b0, npu_start, npu_reset, instr_addr, instr_len,
+                        pmu_enable, pmu_clear, seq_rdata, 1'b0};
+
+  assign led_calib  = ~init_calib_complete;
+  assign led_locked = ~mmcm_locked;
 
 endmodule

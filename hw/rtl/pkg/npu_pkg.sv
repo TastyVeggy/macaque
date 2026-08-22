@@ -143,6 +143,11 @@ package npu_pkg;
   parameter logic [ 7:0] REG_PMU_DMA_BYTES_RD = 8'h40;
   parameter logic [ 7:0] REG_PMU_DMA_BYTES_WR = 8'h48;
 
+  // Instruction memory
+  parameter int          IMEM_DEPTH   = 4096;
+  parameter int          IMEM_ADDR_W  = $clog2(IMEM_DEPTH);  // word index width
+  parameter logic [31:0] IMEM_BASE    = 32'h5000_0000;
+
   // Dual-lane sequencer: per-bank slot state for dep_tracker
   typedef enum logic [1:0] {
     SLOT_EMPTY,   // available for DMA to load
