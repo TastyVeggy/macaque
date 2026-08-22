@@ -1,12 +1,20 @@
 source [file join [file dirname [info script]] "common.tcl"]
+source [file join [file dirname [info script]] "top_config.tcl"]
 
-file mkdir $build_dir
+create_project $proj "$proj_dir" -part $part -force
 
-create_project $proj "$build_dir/vivado" -part $part -force
 add_files [glob_recursive "$rtl_dir"]
 
-add_files -fileset constrs_1 [glob "$constrs_dir/*.xdc"]
-update_compile_order -fileset sources_1
+foreach f $TOP_XDC($top_module) {
+    add_files -fileset constrs_1 [file join $constrs_dir $f]
+}
 
-source [file join [file dirname [info script]] "ip/create_axi_dma.tcl"]
-source [file join [file dirname [info script]] "ip/create_mig.tcl"]
+foreach ip $TOP_IPS($top_module) {
+    source [file join [file dirname [info script]] "ip" $ip]
+}
+
+set_property top $top_module [current_fileset]
+update_compile_order -fileset sources_1
+update_compile_order -fileset constrs_1
+
+puts "PROJECT: created $proj_file (top=$top_module)"

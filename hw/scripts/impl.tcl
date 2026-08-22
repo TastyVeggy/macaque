@@ -1,18 +1,15 @@
 source [file join [file dirname [info script]] "common.tcl"]
+source [file join [file dirname [info script]] "top_config.tcl"]
 
-file mkdir $build_dir
+if {![file exists $proj_file]} {
+    error "project not found: $proj_file — run 'make synth' first"
+}
+open_project $proj_file
 
-read_checkpoint $post_synth
+launch_runs impl_1 -to_step write_bitstream -jobs 7
+wait_on_run impl_1
+if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
+    error "IMPLEMENTATION/BITGEN FAILED — see impl_1 run log for '$top_module'"
+}
 
-link_design -top $top_module -part $part
-
-read_xdc [glob "$constrs_dir/*.xdc"]
-
-opt_design
-place_design
-route_design
-
-write_checkpoint -force $post_route
-report_timing_summary -file $timing_sum
-
-
+puts "IMPL DONE: $top_module ($proj_dir)"

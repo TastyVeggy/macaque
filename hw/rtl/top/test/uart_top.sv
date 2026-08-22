@@ -5,8 +5,8 @@ module uart_top #(
 ) (
     input  logic clk,
     input  logic rst_n,
-    input  logic rx_pin,
-    output logic tx_pin
+    input  logic uart_rx,
+    output logic uart_tx
 );
   logic [7:0] rx_data;
   logic       rx_valid;
@@ -26,7 +26,7 @@ module uart_top #(
   ) rx_inst (
       .clk     (clk),
       .rst     (rst),
-      .rx_pin  (rx_pin),
+      .rx_pin  (uart_rx),
       .rx_data (rx_data),
       .rx_valid(rx_valid)
   );
@@ -40,7 +40,7 @@ module uart_top #(
       .tx_data (rx_data),
       .tx_valid(rx_valid),
       .tx_ready(tx_ready),
-      .tx_pin  (tx_pin)
+      .tx_pin  (uart_tx)
   );
 
 endmodule

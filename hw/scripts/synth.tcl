@@ -1,10 +1,9 @@
-source [file join [file dirname [info script]] "common.tcl"]
+source [file join [file dirname [info script]] "project.tcl"]
 
-file mkdir $build_dir
+launch_runs synth_1 -jobs 7
+wait_on_run synth_1
+if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
+    error "SYNTHESIS FAILED — see synth_1 run log for '$top_module'"
+}
 
-read_verilog -sv [glob_recursive "$hw_dir/rtl"]
-read_xdc [glob "$constrs_dir/*.xdc"]
-
-synth_design -top $top_module -part $part
-write_checkpoint -force $post_synth
-
+puts "SYNTH DONE: $top_module ($proj_dir)"

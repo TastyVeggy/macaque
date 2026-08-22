@@ -5,6 +5,10 @@ package npu_pkg;
   parameter int SYS_CLK_FREQ = 50_000_000;
   parameter int UART_BAUD_DEFAULT = 115_200;
 
+  parameter int MIG_MEMCLK_FREQ = 325_000_000;
+  parameter int MIG_PHY_RATIO   = 4;
+  parameter int MIG_UI_CLK_FREQ = MIG_MEMCLK_FREQ / MIG_PHY_RATIO;
+
   // In systolic array
   parameter int DTYPE_WEIGHT_W = 8;
   parameter int DTYPE_ACT_W = 8;
@@ -126,18 +130,18 @@ package npu_pkg;
   endfunction
 
   // Control register map
-  // All offsets in bytes, 32-bit registers
-  parameter logic [31:0] REG_CTRL = 32'h0000;
-  parameter logic [31:0] REG_STATUS = 32'h0004;
-  parameter logic [31:0] REG_INSTR_ADDR = 32'h0008;
-  parameter logic [31:0] REG_INSTR_LEN = 32'h000C;
-  parameter logic [31:0] REG_PMU_CTRL = 32'h0010;
-  parameter logic [31:0] REG_PMU_CYCLES_LO = 32'h0014;
-  parameter logic [31:0] REG_PMU_CYCLES_HI = 32'h0018;
-  parameter logic [31:0] REG_PMU_COMPUTE = 32'h001C;
-  parameter logic [31:0] REG_PMU_STALL = 32'h0020;
-  parameter logic [31:0] REG_PMU_DMA_BYTES_RD = 32'h0024;
-  parameter logic [31:0] REG_PMU_DMA_BYTES_WR = 32'h0028;
+  // Byte offsets from REG_BASE, 64-bit registers
+  parameter logic [31:0] REG_BASE         = 32'h4000_0000;
+  parameter logic [ 7:0] REG_CTRL         = 8'h00;
+  parameter logic [ 7:0] REG_STATUS       = 8'h08;
+  parameter logic [ 7:0] REG_INSTR_ADDR   = 8'h10;
+  parameter logic [ 7:0] REG_INSTR_LEN    = 8'h18;
+  parameter logic [ 7:0] REG_PMU_CTRL     = 8'h20;
+  parameter logic [ 7:0] REG_PMU_CYCLES   = 8'h28;
+  parameter logic [ 7:0] REG_PMU_COMPUTE  = 8'h30;
+  parameter logic [ 7:0] REG_PMU_STALL    = 8'h38;
+  parameter logic [ 7:0] REG_PMU_DMA_BYTES_RD = 8'h40;
+  parameter logic [ 7:0] REG_PMU_DMA_BYTES_WR = 8'h48;
 
   // Dual-lane sequencer: per-bank slot state for dep_tracker
   typedef enum logic [1:0] {

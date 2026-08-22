@@ -18,4 +18,7 @@ set post_route "$build_dir/${proj}_${top_module}_post_route.dcp"
 set timing_sum "$build_dir/${proj}_${top_module}_timing_summary.txt"
 set bitstream "$build_dir/${proj}_${top_module}.bit"
 
+set proj_dir  "$build_dir/${proj}_${top_module}"
+set proj_file [file join $proj_dir ${proj}.xpr]
+
 source "$hw_dir/scripts/utils.tcl"

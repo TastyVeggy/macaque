@@ -7,6 +7,11 @@ RTL_DIR    := rtl
 SIM_DIR    := sim
 CONSTRS    := constrs
 TOP_DIR    := $(RTL_DIR)/top
+PYTHON     ?= python 			# python binary path
+PORT       ?= /dev/ttyUSB0
+
+# On-board host test: by convention hw/test/<TOP>/test.py (override HW_TEST).
+HW_TEST    ?= test/$(TOP)/test.py
 
 VALID_TOPS  := $(basename $(notdir $(shell find $(TOP_DIR) -name "*.sv")))
 SYNTH_STAMP := $(BUILD_DIR)/.synth_$(TOP)
@@ -30,12 +35,14 @@ endef
 
 SRCS := $(shell find $(RTL_DIR) -name "*.sv" -o -name "*.v")
 XDC  := $(shell find $(CONSTRS) -name "*.xdc")
+IPDEPS := $(shell find $(SCRIPT_DIR)/ip -type f) $(shell find ip -name "*.prj")
+DEPS := $(SRCS) $(XDC) $(IPDEPS) $(SCRIPT_DIR)/top_config.tcl $(SCRIPT_DIR)/project.tcl
 
-.PHONY: all synth impl bitstream program project validate sim tidy clean
+.PHONY: all build synth impl bitstream program run_test project validate sim tidy clean
 
 all: program
 
-$(SYNTH_STAMP): $(SRCS) $(XDC) | validate
+$(SYNTH_STAMP): $(DEPS) | validate
 	@mkdir -p $(BUILD_DIR)
 	@rm -f $(IMPL_STAMP) $(BIT_STAMP) $(PROGRAM_STAMP)
 	$(VIV_BIN) -source $(SCRIPT_DIR)/synth.tcl -tclargs $(ROOT_DIR) $(TOP)
@@ -59,17 +66,21 @@ $(PROGRAM_STAMP): $(BIT_STAMP) | validate
 	$(VIV_BIN) -source $(SCRIPT_DIR)/program.tcl -tclargs $(ROOT_DIR) $(TOP)
 	@touch $(PROGRAM_STAMP)
 
-
+build: $(BIT_STAMP)
 synth: $(SYNTH_STAMP)
-
 impl: $(IMPL_STAMP)
-
 bitstream: $(BIT_STAMP)
 
 program: $(PROGRAM_STAMP)
 
+run_test: | validate
+	@test -f "$(HW_TEST)" || { \
+		echo ""; echo "ERROR: host script not found: $(HW_TEST)"; \
+		echo "Set HW_TEST=path (relative to hw/) or PORT=..."; exit 1; }; \
+	python3 $(HW_TEST) $(PORT)
+
 project:
-	$(VIV_BIN) -source $(SCRIPT_DIR)/project.tcl -tclargs $(ROOT_DIR)
+	$(VIV_BIN) -source $(SCRIPT_DIR)/project.tcl -tclargs $(ROOT_DIR) $(TOP)
 
 sim:
 	$(MAKE) -C sim 
@@ -83,4 +94,3 @@ tidy:
 clean: tidy
 	rm -rf $(BUILD_DIR)
 	$(MAKE) -C sim clean
-
