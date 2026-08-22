@@ -13,7 +13,7 @@ module quant_buffer (
     input  npu_pkg::bram_addr_t dma_raddr,
     output npu_pkg::act_vec_t   dma_rdata,
 
-    // Bank select (clk_sa domain, synced internally to clk_ddr)
+    // Bank select (single clock domain)
     // quant_bank_sel=0: Activate unit writes bank0, DMA stores bank1
     // quant_bank_sel=1: activate unit writes bank1, DMA stores bank0
     input logic quant_bank_sel
@@ -22,16 +22,11 @@ module quant_buffer (
   npu_pkg::act_vec_t rdata0;
   npu_pkg::act_vec_t rdata1;
 
-  // cross from clk_sa to clk_ddr
-  logic quant_bank_sel_sync;
-  logic quant_bank_sel_ddr;
-
+  // BRAM read latency alignment (single clock; no CDC sync needed)
   logic quant_bank_sel_mux;
 
   always_ff @(posedge clk_ddr) begin
-    quant_bank_sel_sync <= quant_bank_sel;
-    quant_bank_sel_ddr  <= quant_bank_sel_sync;
-    quant_bank_sel_mux  <= quant_bank_sel_ddr;
+    quant_bank_sel_mux <= quant_bank_sel;
   end
 
   generate
@@ -45,7 +40,7 @@ module quant_buffer (
           .addr_a (sa_waddr),
           .wdata_a(sa_wdata[i]),
           .clk_b  (clk_ddr),
-          .re_b   (dma_re & (quant_bank_sel_ddr == 1'b1)),
+          .re_b   (dma_re & (quant_bank_sel == 1'b1)),
           .addr_b (dma_raddr),
           .rdata_b(rdata0[i])
       );
@@ -58,7 +53,7 @@ module quant_buffer (
           .addr_a (sa_waddr),
           .wdata_a(sa_wdata[i]),
           .clk_b  (clk_ddr),
-          .re_b   (dma_re & (quant_bank_sel_ddr == 1'b0)),
+          .re_b   (dma_re & (quant_bank_sel == 1'b0)),
           .addr_b (dma_raddr),
           .rdata_b(rdata1[i])
       );

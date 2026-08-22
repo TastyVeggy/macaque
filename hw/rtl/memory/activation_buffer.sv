@@ -13,7 +13,7 @@ module activation_buffer (
     input  npu_pkg::bram_addr_t sa_raddr,
     output npu_pkg::act_vec_t   sa_rdata,
 
-    // Bank select (clk_ddr domain, synced internally to clk_sa)
+    // Bank select (single clock domain)
     // act_bank_sel=0: SA reads bank0, DMA loads bank1
     // act_bank_sel=1: SA reads bank1, DMA loads bank0
     input logic act_bank_sel
@@ -22,17 +22,11 @@ module activation_buffer (
   npu_pkg::act_vec_t rdata0;
   npu_pkg::act_vec_t rdata1;
 
-  // cross from clk_ddr to clk_sa
-  logic act_bank_sel_sync;
-  logic act_bank_sel_sa;
-
-  // BRAM read latency
+  // BRAM read latency alignment (single clock; no CDC sync needed)
   logic act_bank_sel_mux;
 
   always_ff @(posedge clk_sa) begin
-    act_bank_sel_sync <= act_bank_sel;
-    act_bank_sel_sa   <= act_bank_sel_sync;
-    act_bank_sel_mux  <= act_bank_sel_sa;
+    act_bank_sel_mux <= act_bank_sel;
   end
 
   generate
@@ -46,7 +40,7 @@ module activation_buffer (
           .addr_a (dma_waddr),
           .wdata_a(dma_wdata[i]),
           .clk_b  (clk_sa),
-          .re_b   (sa_re & (act_bank_sel_sa == 1'b0)),
+          .re_b   (sa_re & (act_bank_sel == 1'b0)),
           .addr_b (sa_raddr),
           .rdata_b(rdata0[i])
       );
@@ -59,7 +53,7 @@ module activation_buffer (
           .addr_a (dma_waddr),
           .wdata_a(dma_wdata[i]),
           .clk_b  (clk_sa),
-          .re_b   (sa_re & (act_bank_sel_sa == 1'b1)),
+          .re_b   (sa_re & (act_bank_sel == 1'b1)),
           .addr_b (sa_raddr),
           .rdata_b(rdata1[i])
       );
