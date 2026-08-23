@@ -24,4 +24,21 @@ def Macaque_LoadWeightOp : Macaque_Op<"load_weight"> {
   let hasVerifier = 1;
 }
 
+def Macaque_LoadBiasOp : Macaque_Op<"load_bias"> {
+  let summary = "Load a bias tile from DDR3 into the on-chip bias buffer";
+  let description = [{
+    Corresponds to OP_LOAD_BIAS (opcode 0x1).
+    ddr3_addr occupies instruction bits [55:28] (28 bits) and byte_count
+    occupies [27:12] (16 bits).
+  }];
+
+  let arguments = (ins
+    UI32Attr:$ddr3_addr,
+    UI16Attr:$byte_count
+  );
+
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
 #endif // MACAQUE_OPS

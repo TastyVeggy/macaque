@@ -12,3 +12,10 @@ LogicalResult LoadWeightOp::verify() {
            << getDdr3Addr();
   return success();
 }
+
+LogicalResult LoadBiasOp::verify() {
+  if (getDdr3Addr() >= (1u << 28))
+    return emitOpError("ddr3_addr must fit in 28 bits [55:28], got ")
+           << getDdr3Addr();
+  return success();
+}
