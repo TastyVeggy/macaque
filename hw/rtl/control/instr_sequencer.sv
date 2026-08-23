@@ -84,6 +84,7 @@ module instr_sequencer (
 
   // DMA lane
   logic                  dma_lane_busy;
+  logic                  dma_lane_stall;
   logic                  dma_issue;  // DMA would-issue a load this cycle
   logic                  dma_load_done_notify;
   npu_pkg::buffer_type_t dma_load_buf_type;
@@ -96,6 +97,7 @@ module instr_sequencer (
 
   // Compute lane
   logic        comp_lane_busy;
+  logic        comp_lane_stall;
   logic        comp_mac_active;
   logic        comp_error;
   logic comp_matmul_start_notify, comp_matmul_drain_notify;
@@ -178,7 +180,9 @@ module instr_sequencer (
       .comp_act_bank_sel   (int_act_bank_sel),
       .comp_bias_bank_sel  (int_bias_bank_sel),
       .dma_issue           (dma_issue),
-      .busy                (dma_lane_busy)
+      .store_req           (comp_store_req),
+      .busy                (dma_lane_busy),
+      .stall               (dma_lane_stall)
   );
 
   compute_lane comp_inst (
@@ -226,6 +230,7 @@ module instr_sequencer (
       .quant_bank_sel          (quant_bank_sel),
       .busy                    (comp_lane_busy),
       .mac_active              (comp_mac_active),
+      .stall                   (comp_lane_stall),
       .error                   (comp_error)
   );
 
@@ -262,7 +267,7 @@ module instr_sequencer (
   assign pmu_freeze      = done;
   assign run_active      = busy;
   assign mac_active      = comp_mac_active;
-  assign stall           = dma_lane_busy || comp_lane_busy;
+  assign stall           = dma_lane_stall || comp_lane_stall;
 
   // Mux shared DMA channel signals: load_req from DMA lane, store_req from compute lane
   assign load_req        = dma_load_req;

@@ -45,18 +45,22 @@ async def reset(dut):
 
 def start_bram_model(dut, ob_data):
     """Model the registered BRAM read exactly like bram_sdp / out_buffer:
-       rdata(cycle N+1) = mem[raddr(cycle N)].  Reads the CURRENT ob_data dict
+       rdata(cycle N+1) = mem[raddr(cycle N)],. Reads the CURRENT ob_data dict
        (shared, updated by run_case) so one task serves all cases.
     """
     async def drive():
+        pending = None
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
+            re = int(dut.ob_re.value)
             addr = int(dut.ob_raddr.value)
             await NextTimeStep()
-            ob = ob_data.get(addr, [0] * ARRAY_SIZE)
-            for i in range(ARRAY_SIZE):
-                dut.ob_rdata[i].value = ob[i]
+            if pending is not None:
+                ob = ob_data.get(pending, [0] * ARRAY_SIZE)
+                for i in range(ARRAY_SIZE):
+                    dut.ob_rdata[i].value = ob[i]
+            pending = addr if re else pending
 
     cocotb.start_soon(drive())
 

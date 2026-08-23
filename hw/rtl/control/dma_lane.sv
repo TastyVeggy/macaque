@@ -39,7 +39,13 @@ module dma_lane (
     // DMA channel (compute defers a STORE while a LOAD is issuing).
     output logic dma_issue,
 
-    output logic busy
+    // Shared-channel arbitration: high while the compute lane is holding a STORE
+    // request. The DMA lane defers its LOAD so the store request is not lost.
+    input logic store_req,
+
+    output logic busy,
+
+    output logic stall
 );
 
   logic busy_r;
@@ -86,7 +92,7 @@ module dma_lane (
         npu_pkg::OP_LOAD_WEIGHT,
         npu_pkg::OP_LOAD_BIAS,
         npu_pkg::OP_LOAD_INPUT}) &&
-      dma_can_load_this;
+      dma_can_load_this && !store_req;
 
   typedef enum logic [1:0] {
     IDLE,
@@ -133,7 +139,7 @@ module dma_lane (
               npu_pkg::OP_LOAD_BIAS,
               npu_pkg::OP_LOAD_INPUT}) begin
 
-              if (dma_can_load_this) begin
+              if (dma_can_load_this && !store_req) begin
                 fifo_pop <= 1'b1;
                 load_req <= 1'b1;
                 load_target <= cur_buf_type;
@@ -176,6 +182,7 @@ module dma_lane (
     end
   end
 
-  assign busy = busy_r || !fifo_empty;
+  assign busy  = busy_r || !fifo_empty;
+  assign stall = busy_r && (state != WAIT);
 
 endmodule

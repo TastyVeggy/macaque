@@ -115,7 +115,7 @@ module activate_unit (
         for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) qb_wdata[i] <= qb_wdata_next[i];
       end
 
-      if (state == ACT_PIPELINE && act_count < num_rows) ob_raddr <= act_count;
+      if (state == ACT_PIPELINE && act_count < num_rows) ob_raddr <= act_count + 1'b1;
 
       done <= '0;
       case (state)

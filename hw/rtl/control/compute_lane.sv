@@ -74,7 +74,9 @@ module compute_lane (
 
     // Status
     output logic busy,
-    output logic mac_active
+    output logic mac_active,
+
+    output logic stall
 );
 
   logic busy_r;
@@ -294,6 +296,8 @@ module compute_lane (
           busy_r <= '1;
           if (store_done) begin
             state <= IDLE;
+          end else begin
+            store_req <= 1'b1;
           end
         end
 
@@ -314,5 +318,7 @@ module compute_lane (
   end
 
   assign busy = busy_r || !fifo_empty;
+
+  assign stall = (state == MATMUL_WAIT) || (state == STORE_WAIT) || (state == SYNC_WAIT);
 
 endmodule

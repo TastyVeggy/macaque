@@ -5,7 +5,7 @@ package npu_pkg;
   parameter int SYS_CLK_FREQ = 50_000_000;
   parameter int UART_BAUD_DEFAULT = 115_200;
 
-  parameter int MIG_MEMCLK_FREQ = 325_000_000;
+  parameter int MIG_MEMCLK_FREQ = 333_333_333;
   parameter int MIG_PHY_RATIO   = 4;
   parameter int MIG_UI_CLK_FREQ = MIG_MEMCLK_FREQ / MIG_PHY_RATIO;
 
@@ -51,7 +51,7 @@ package npu_pkg;
     OP_SYNC        = 4'h6
   } opcode_t;
 
-  // ISA instruction field positions (per SPEC_ISA.md §1.1)
+  // ISA instruction field positions
   parameter int ISA_OPCODE_W = 4;
   parameter int ISA_OPCODE_L = 60;
   parameter int ISA_ACC_MODE_B = 59;
@@ -107,12 +107,12 @@ package npu_pkg;
     logic        acc_mode;         // [59] (unused by ACTIVATE)
     act_func_t   act_func;         // [58:56] (target)
     logic [27:0] act_scale_m;      // [55:28] (ddr3_addr)
-    logic [10:0] leaky_shift;      // [27:17] (byte_count[15:5]) — per-instruction
+    logic [10:0] leaky_shift;      // [27:17] (byte_count[15:5]) - per-instruction
                                    //          leaky slope (α = 2^-leaky_shift).
                                    //          NOT yet implemented: hardware uses
                                    //          the global npu_pkg::LEAKY_RELU_SHIFT.
     logic [4:0]  act_scale_shift;  // [16:12] (byte_count[4:0])
-    logic [3:0]  reserved;         // [11:8]  (tile_params[11:8]) — reserved/unallocated.
+    logic [3:0]  reserved;         // [11:8]  (tile_params[11:8]) - reserved/unallocated.
     logic [7:0]  act_num_rows;     // [ 7:0]  (tile_params[7:0])
   } act_instr_t;
 

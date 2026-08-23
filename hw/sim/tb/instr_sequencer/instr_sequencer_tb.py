@@ -47,7 +47,7 @@ async def wait_for(dut, signal, value, timeout=200):
 
 
 def start_im_data_model(dut, program):
-    """Model the registered BRAM read exactly like npu_top's instr_mem:
+    """Model the registered BRAM read exactly like npu_core's instr_mem:
 
        im_data (cycle M+1) = instr_mem[im_addr (cycle M)]
 

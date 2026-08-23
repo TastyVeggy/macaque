@@ -24,6 +24,11 @@ module out_buffer (
   logic read_bank;
   assign read_bank = rd_sel ? out_bank_sel : ~out_bank_sel;
 
+  logic read_bank_d;
+  always_ff @(posedge clk_sa) begin
+    if (rd_re) read_bank_d <= read_bank;
+  end
+
   generate
     for (genvar i = 0; i < npu_pkg::ARRAY_SIZE; i++) begin : gen_col
 
@@ -53,7 +58,7 @@ module out_buffer (
           .rdata_b(rdata1[i])
       );
 
-      assign rd_rdata[i] = (read_bank == 1'b0) ? rdata0[i] : rdata1[i];
+      assign rd_rdata[i] = (read_bank_d == 1'b0) ? rdata0[i] : rdata1[i];
 
     end
   endgenerate

@@ -127,7 +127,7 @@ module stream_buffer_adapter (
       // emit 8 bytes from the head
       s_next_acc = s_next_acc >> 64;
       if (qb_valid) s_next_fill = acc_fill + 9'(Int8RowBytes) - 9'd8;
-      else s_next_fill = acc_fill - 9'd8;
+      else s_next_fill = (acc_fill >= 9'd8) ? (acc_fill - 9'd8) : 9'd0;
     end
   end
 
@@ -209,7 +209,7 @@ module stream_buffer_adapter (
             read_pending    <= 1'b0;
             store_rows_read <= store_rows_read + 16'd1;
           end
-          if (all_rows_read && (acc_fill == 9'd0)) state <= IDLE;
+          if (all_rows_read && (acc_fill == 9'd0) && !store_req) state <= IDLE;
         end
 
         default: ;

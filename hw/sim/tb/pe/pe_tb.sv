@@ -122,7 +122,7 @@ module pe_tb ();
     tick();  // cycle +2
     check_valid("acc_out_valid low+2", acc_out_valid, 1'b0);
 
-    tick();  // cycle +3 — acc_out valid
+    tick();  // cycle +3 - acc_out valid
     check_valid("acc_out_valid high", acc_out_valid, 1'b1);
     check("acc_out = 112", int'($signed(acc_out)), 112);
 
