@@ -4,6 +4,10 @@ A vertically integrated custom AI accelerator and software toolchain stack.
 
 The design is implemented on the QMTECH Wukong V3 development board, which features a Xilinx Artix-7 XC7A100T FPGA.
 
+**Status**: 
+* Hardware has a working iteration on real silicon. 
+* The software stack, which includes the simulator, codegen (or compiler backend) and runtime, is currently work in progress.
+
 ---
 
 ## Hardware
@@ -191,6 +195,8 @@ TBD as compiler is built
 - GCC or Clang with C++20 support
 - Python 3.12 (For hardware simulation and testing)
     - Install packages in `requirements.txt`
+- llvm with mlir
+    - Can be installed and built via [this script](scripts/build_llvm.sh)
 
 ### Hardware
 To do a full build and program the FPGA:

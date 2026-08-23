@@ -20,6 +20,8 @@ dist/
 compile_commands.json
 .cache
 
+third-party/
+
 *.log
 *.jou
 *.str

@@ -1,0 +1,30 @@
+#include <gtest/gtest.h>
+
+#include "macaque/Dialect/MacaqueOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
+
+using namespace mlir;
+using namespace macaque;
+
+TEST(LoadWeightOp, MaxValidAddressVerifies) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+
+  auto op =
+      LoadWeightOp::create(builder, loc, TypeRange{}, (1u << 28) - 1, 200);
+  EXPECT_TRUE(succeeded(verify(op)));
+}
+
+TEST(LoadWeightOp, OneOverMaxAddressFailsVerification) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+
+  auto op = LoadWeightOp::create(builder, loc, TypeRange{}, (1u << 28), 200);
+  EXPECT_TRUE(failed(verify(op)));
+}
