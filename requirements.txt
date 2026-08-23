@@ -1,0 +1,12 @@
+cocotb==2.0.1
+cocotb-bus==0.3.0
+cocotb-tools==0.1.0
+cocotbext-axi==0.1.28
+find_libpython==0.5.1
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0
+pyserial==3.5
+pytest==9.0.3
+scapy==2.7.0
