@@ -20,6 +20,8 @@ uint32_t byteSizeOf(RankedTensorType type) {
                                (type.getElementTypeBitWidth() / 8));
 }
 
+uint32_t alignUp(uint32_t x) { return (x + 7u) & ~7u; }
+
 // Extract the single value of a 1-element tosa.const.
 std::optional<int64_t> getScalarConstValue(Value v) {
   auto constOp = v.getDefiningOp<tosa::ConstOp>();
@@ -101,6 +103,22 @@ bool feedsMatmul(tosa::RescaleOp rescale) {
   return false;
 }
 
+// True if `matmul` feeds a downstream tosa.rescale (directly or through a
+// bias add) - i.e. it belongs to RescaleToMacaque's fused chain, not a bare
+// Pattern-1 matmul. Declared here (rather than by Pattern 1 below, where it
+// conceptually lives) so sizeRegions can also use it to tell a bare matmul
+// (which will always need an explicit zero-bias load - see emitBias) from
+// one whose bias handling is decided by its rescale's chain instead.
+bool feedsRescale(tosa::MatMulOp matmul) {
+  for (Operation* user : matmul->getUsers()) {
+    if (isa<tosa::RescaleOp>(user)) return true;
+    if (isa<tosa::AddOp>(user))
+      for (Operation* addUser : user->getUsers())
+        if (isa<tosa::RescaleOp>(addUser)) return true;
+  }
+  return false;
+}
+
 // Pre-pass: sum each region's total bytes across the whole block before
 // any conversion runs, so we can dynamically get the offsets
 struct DdrRegionTotals {
@@ -111,7 +129,13 @@ struct DdrRegionTotals {
   // Scratch A/B are ping-ponged (reused across layers), so they're sized to
   // the largest single intermediate activation.
   uint32_t maxScratchBytes = 0;
+  uint32_t maxZeroBiasBytes = 0;
 };
+
+uint32_t biasBytesFor(RankedTensorType bType) {
+  return static_cast<uint32_t>(bType.getShape()[2]) *
+         static_cast<uint32_t>(sizeof(int32_t));
+}
 
 DdrRegionTotals sizeRegions(Block& block) {
   DdrRegionTotals totals;
@@ -119,24 +143,38 @@ DdrRegionTotals sizeRegions(Block& block) {
     if (auto matmul = dyn_cast<tosa::MatMulOp>(op)) {
       if (!matmul.getA().getDefiningOp<tosa::RescaleOp>()) {
         if (auto aType = dyn_cast<RankedTensorType>(matmul.getA().getType()))
-          totals.inputBytes += byteSizeOf(aType);
+          totals.inputBytes += alignUp(byteSizeOf(aType));
       }
-      if (auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>())
-        totals.weightsBytes +=
-            byteSizeOf(cast<RankedTensorType>(bConst.getType()));
+      if (auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>()) {
+        auto bType = cast<RankedTensorType>(bConst.getType());
+        totals.weightsBytes += alignUp(byteSizeOf(bType));
+        // A bare (non-rescaled) matmul never has a bias so it always needs the zero-bias slot.
+        if (!feedsRescale(matmul))
+          totals.maxZeroBiasBytes =
+              std::max(totals.maxZeroBiasBytes, biasBytesFor(bType));
+      }
     } else if (auto rescale = dyn_cast<tosa::RescaleOp>(op)) {
       const uint32_t bytes =
           byteSizeOf(cast<RankedTensorType>(rescale.getOutput().getType()));
       if (feedsMatmul(rescale)) {
+        // Scratch A/B are each a single fixed slot, not a running sum of
+        // per-item allocations (no DdrLayout::bump), so they don't need the alignUp-per-item
+        // treatment
         totals.maxScratchBytes = std::max(totals.maxScratchBytes, bytes);
       } else {
-        totals.outputBytes += bytes;
+        totals.outputBytes += alignUp(bytes);
       }
       if (std::optional<MatmulChain> chain =
-              matchMatmulChain(rescale.getInput());
-          chain && chain->biasConst) {
-        totals.biasesBytes +=
-            byteSizeOf(cast<RankedTensorType>(chain->biasConst.getType()));
+              matchMatmulChain(rescale.getInput())) {
+        if (chain->biasConst) {
+          totals.biasesBytes += alignUp(byteSizeOf(
+              cast<RankedTensorType>(chain->biasConst.getType())));
+        } else if (auto bConst =
+                       chain->matmul.getB().getDefiningOp<tosa::ConstOp>()) {
+          totals.maxZeroBiasBytes = std::max(
+              totals.maxZeroBiasBytes,
+              biasBytesFor(cast<RankedTensorType>(bConst.getType())));
+        }
       }
     }
   }
@@ -149,7 +187,8 @@ class DdrLayout {
   explicit DdrLayout(const DdrRegionTotals& totals) {
     weight_next_ = kWeightBase;
     bias_next_ = alignUp(weight_next_ + totals.weightsBytes);
-    input_next_ = alignUp(bias_next_ + totals.biasesBytes);
+    zero_bias_base_ = alignUp(bias_next_ + totals.biasesBytes);
+    input_next_ = alignUp(zero_bias_base_ + totals.maxZeroBiasBytes);
     scratch_a_base_ = alignUp(input_next_ + totals.inputBytes);
     scratch_b_base_ = alignUp(scratch_a_base_ + totals.maxScratchBytes);
     output_next_ = alignUp(scratch_b_base_ + totals.maxScratchBytes);
@@ -159,6 +198,10 @@ class DdrLayout {
   uint32_t allocateBias(uint32_t bytes) { return bump(bias_next_, bytes); }
   uint32_t allocateInput(uint32_t bytes) { return bump(input_next_, bytes); }
   uint32_t allocateOutput(uint32_t bytes) { return bump(output_next_, bytes); }
+
+  // Fixed, shared and not written by the running program itself.
+  // The runtime is responsible for staging it as zero, same as any other region.
+  uint32_t zeroBiasAddr() const { return zero_bias_base_; }
 
   uint32_t allocateScratch() {
     // ping-pong buffering
@@ -170,8 +213,6 @@ class DdrLayout {
  private:
   static constexpr uint32_t kWeightBase = 0x0000'1000;
 
-  static uint32_t alignUp(uint32_t x) { return (x + 7u) & ~7u; }
-
   static uint32_t bump(uint32_t& cursor, uint32_t bytes) {
     uint32_t addr = cursor;
     cursor = alignUp(cursor + bytes);
@@ -180,6 +221,7 @@ class DdrLayout {
 
   uint32_t weight_next_;
   uint32_t bias_next_;
+  uint32_t zero_bias_base_;
   uint32_t input_next_;
   uint32_t scratch_a_base_;
   uint32_t scratch_b_base_;
@@ -205,19 +247,25 @@ void emitLoadWeightAndInput(const MatmulOperands& operands, DdrLayout& layout,
                       static_cast<uint16_t>(inputBytes));
 }
 
+void emitBias(tosa::ConstOp biasConst, RankedTensorType weightType,
+             DdrLayout& layout, Location loc,
+             ConversionPatternRewriter& rewriter) {
+  if (biasConst) {
+    auto biasType = cast<RankedTensorType>(biasConst.getType());
+    const uint32_t biasBytes = byteSizeOf(biasType);
+    const uint32_t biasAddr = layout.allocateBias(biasBytes);
+    LoadBiasOp::create(rewriter, loc, TypeRange{}, biasAddr,
+                       static_cast<uint16_t>(biasBytes));
+    return;
+  }
+  const uint32_t zeroBytes = biasBytesFor(weightType);
+  LoadBiasOp::create(rewriter, loc, TypeRange{}, layout.zeroBiasAddr(),
+                     static_cast<uint16_t>(zeroBytes));
+}
+
 // Pattern 1: bare tosa.matmul -> load_weight, load_input, matmul(acc_mode=0)
 //
 // Only applies to a matmul with no downstream tosa.rescale (feedsRescale returns false)
-
-bool feedsRescale(tosa::MatMulOp matmul) {
-  for (Operation* user : matmul->getUsers()) {
-    if (isa<tosa::RescaleOp>(user)) return true;
-    if (isa<tosa::AddOp>(user))
-      for (Operation* addUser : user->getUsers())
-        if (isa<tosa::RescaleOp>(addUser)) return true;
-  }
-  return false;
-}
 
 struct MatmulToMacaque : public OpConversionPattern<tosa::MatMulOp> {
   MatmulToMacaque(MLIRContext* ctx, DdrLayout& layout,
@@ -235,6 +283,8 @@ struct MatmulToMacaque : public OpConversionPattern<tosa::MatMulOp> {
 
     Location loc = op.getLoc();
     emitLoadWeightAndInput(*operands, layout, intermediateAddr, loc, rewriter);
+    // Always the zero-bias case.
+    emitBias(/*biasConst=*/nullptr, operands->bType, layout, loc, rewriter);
     MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
                      static_cast<uint16_t>(operands->rows));
 
@@ -305,14 +355,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
     Location loc = op.getLoc();
     emitLoadWeightAndInput(*operands, layout, intermediateAddr, loc, rewriter);
-
-    if (chain->biasConst) {
-      auto biasType = cast<RankedTensorType>(chain->biasConst.getType());
-      const uint32_t biasBytes = byteSizeOf(biasType);
-      const uint32_t biasAddr = layout.allocateBias(biasBytes);
-      LoadBiasOp::create(rewriter, loc, TypeRange{}, biasAddr,
-                         static_cast<uint16_t>(biasBytes));
-    }
+    emitBias(chain->biasConst, operands->bType, layout, loc, rewriter);
 
     MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
                      static_cast<uint16_t>(operands->rows));
@@ -368,7 +411,14 @@ LogicalResult lowerTosaToMacaque(Block& block) {
   SmallVector<Operation*> ops;
   for (Operation& op : block) ops.push_back(&op);
 
-  return applyPartialConversion(ops, target, std::move(patterns));
+  if (failed(applyPartialConversion(ops, target, std::move(patterns))))
+    return failure();
+
+  // clean up the unused consts
+  for (Operation& op : llvm::make_early_inc_range(block)) {
+    if (isa<tosa::ConstOp>(op) && op.use_empty()) op.erase();
+  }
+  return success();
 }
 
 }  // namespace macaque::codegen::conversion

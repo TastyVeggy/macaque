@@ -255,7 +255,9 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   ASSERT_TRUE(matmulOp);
   ASSERT_TRUE(activate);
   ASSERT_TRUE(store);
-  EXPECT_FALSE(loadBias);
+  //  No TOSA-level bias, but load_bias must still be emitted, pointing at the shared zero-bias slot.
+  ASSERT_TRUE(loadBias);
+  EXPECT_EQ(loadBias.getByteCount(), 14u * sizeof(int32_t));
 
   EXPECT_EQ(activate.getActScaleM(), 12345u);
   EXPECT_EQ(activate.getActScaleShift(), 9u);
@@ -421,12 +423,14 @@ TEST(TosaToMacaque, ChainsRescaleOutputIntoNextMatmulViaScratch) {
   EXPECT_NE(stores[0].getDdr3Addr(), stores[1].getDdr3Addr());
   EXPECT_NE(loadInputs[0].getDdr3Addr(), loadInputs[1].getDdr3Addr());
 
-  // Exact region math: weight(196)x2 -> bias(0) -> input(28, layer 1 only)
-  // -> scratch A(28) -> scratch B(28) -> output(28).
-  EXPECT_EQ(loadInputs[0].getDdr3Addr(), 4488u);   // layer 1: fresh Input slot
-  EXPECT_EQ(stores[0].getDdr3Addr(), 4520u);       // layer 1: Scratch A
-  EXPECT_EQ(loadInputs[1].getDdr3Addr(), 4520u);   // layer 2: chained from Scratch A
-  EXPECT_EQ(stores[1].getDdr3Addr(), 4584u);       // layer 2: Output
+  // Exact region math: weight(196, 8-byte-aligned to 200)x2 -> bias(0, no
+  // real bias) -> zero-bias(56, shared by both no-bias layers) -> input(28,
+  // aligned to 32, layer 1 only) -> scratch A(28) -> scratch B(28) ->
+  // output(28).
+  EXPECT_EQ(loadInputs[0].getDdr3Addr(), 4552u);   // layer 1: fresh Input slot
+  EXPECT_EQ(stores[0].getDdr3Addr(), 4584u);       // layer 1: Scratch A
+  EXPECT_EQ(loadInputs[1].getDdr3Addr(), 4584u);   // layer 2: chained from Scratch A
+  EXPECT_EQ(stores[1].getDdr3Addr(), 4648u);       // layer 2: Output
 }
 
 TEST(TosaToMacaque, FourLayerChainAlternatesScratchAB) {
