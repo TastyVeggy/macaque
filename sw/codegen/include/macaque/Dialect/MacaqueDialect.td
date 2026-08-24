@@ -5,7 +5,7 @@ include "mlir/IR/OpBase.td"
 
 def Macaque_Dialect : Dialect {
   let name = "macaque";
-  let cppNamespace = "::macaque";
+  let cppNamespace = "::mlir::macaque";
   let summary = "Macaque NPU instruction dialect";
   let description = [{
     One operation per opcode.

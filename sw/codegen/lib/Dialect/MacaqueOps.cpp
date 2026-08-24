@@ -4,7 +4,7 @@
 #include "macaque/Dialect/MacaqueOps.cpp.inc"
 
 using namespace mlir;
-using namespace macaque;
+using namespace mlir::macaque;
 
 LogicalResult LoadWeightOp::verify() {
   if (getDdr3Addr() >= (1u << 28))

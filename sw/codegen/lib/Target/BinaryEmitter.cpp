@@ -6,7 +6,7 @@
 #include "mlir/IR/Block.h"
 
 using namespace mlir;
-using namespace macaque;
+using namespace mlir::macaque;
 namespace isa = ::macaque::common::isa;
 
 namespace {

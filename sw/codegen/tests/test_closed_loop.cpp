@@ -12,8 +12,10 @@
 #include "mlir/IR/MLIRContext.h"
 
 using namespace mlir;
-using namespace macaque;
-namespace isa = macaque::common::isa;
+using namespace mlir::macaque;
+namespace sim = ::macaque::sim;
+namespace target = ::macaque::codegen::target;
+namespace isa = ::macaque::common::isa;
 
 namespace {
 
@@ -102,7 +104,7 @@ TEST(ClosedLoop, TwoTileKTilingWithReluIsBitExact) {
   StoreOp::create(builder, loc, TypeRange{}, kOutputAddr,
                    kRows * sim::kArraySize);
 
-  auto words = emitBinary(block);
+  auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 9u);
 

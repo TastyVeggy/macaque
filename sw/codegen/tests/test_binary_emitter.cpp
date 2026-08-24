@@ -9,7 +9,7 @@
 #include "mlir/IR/MLIRContext.h"
 
 using namespace mlir;
-using namespace macaque;
+using namespace mlir::macaque;
 namespace target = ::macaque::codegen::target;
 namespace isa = ::macaque::common::isa;
 

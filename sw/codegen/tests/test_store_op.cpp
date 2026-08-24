@@ -6,7 +6,7 @@
 #include "mlir/IR/Verifier.h"
 
 using namespace mlir;
-using namespace macaque;
+using namespace mlir::macaque;
 
 TEST(StoreOp, MaxValidAddressVerifies) {
   MLIRContext context;
