@@ -6,12 +6,16 @@ add_executable(test_codegen
     test_activate_op.cpp
     test_store_op.cpp
     test_sync_op.cpp
+    test_binary_emitter.cpp
+    test_closed_loop.cpp
 )
 
 target_link_libraries(test_codegen
     PRIVATE
         warnings
         macaque_codegen
+        macaque_common
+        macaque_simulator
         MLIRIR
         GTest::gtest_main
 )

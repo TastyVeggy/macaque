@@ -18,6 +18,7 @@ add_subdirectory(include/macaque/Dialect)
 add_mlir_dialect_library(macaque_codegen
     lib/Dialect/MacaqueDialect.cpp
     lib/Dialect/MacaqueOps.cpp
+    lib/Target/BinaryEmitter.cpp
 
     DEPENDS
     MLIRMacaqueOpsIncGen
