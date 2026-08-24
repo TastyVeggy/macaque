@@ -10,7 +10,7 @@
 
 using namespace mlir;
 using namespace mlir::macaque;
-namespace isa = ::macaque::common::isa;
+namespace macaque_isa = ::macaque::common::isa;
 
 namespace {
 
@@ -30,10 +30,8 @@ std::optional<int64_t> getScalarConstValue(Value v) {
   return elements.getSplatValue<APInt>().getSExtValue();
 }
 
-// Only handles both matmul operands being tosa.const for now.
-// TODO: Handle a real (non-constant) activation input.
 struct MatmulOperands {
-  tosa::ConstOp aConst;
+  Value a;
   tosa::ConstOp bConst;
   RankedTensorType aType;
   RankedTensorType bType;
@@ -42,11 +40,17 @@ struct MatmulOperands {
 
 FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
                                               PatternRewriter& rewriter) {
-  auto aConst = matmul.getA().getDefiningOp<tosa::ConstOp>();
-  auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
-  if (!aConst || !bConst)
+  Value a = matmul.getA();
+  if (!a.getDefiningOp<tosa::ConstOp>() && !isa<BlockArgument>(a) &&
+      !a.getDefiningOp<tosa::RescaleOp>())
     return rewriter.notifyMatchFailure(
-        matmul, "only tosa.const operands are supported for now");
+        matmul,
+        "activation input must be a tosa.const, a block argument, or a "
+        "prior tosa.rescale's result");
+
+  auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
+  if (!bConst)
+    return rewriter.notifyMatchFailure(matmul, "weights must be a tosa.const");
 
   std::optional<int64_t> aZp = getScalarConstValue(matmul.getAZp());
   std::optional<int64_t> bZp = getScalarConstValue(matmul.getBZp());
@@ -56,7 +60,7 @@ FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
         "only zero a_zp/b_zp are supported for now. Zero-point folding "
         "into bias isn't implemented yet");
 
-  auto aType = cast<RankedTensorType>(aConst.getType());
+  auto aType = cast<RankedTensorType>(a.getType());
   auto bType = cast<RankedTensorType>(bConst.getType());
   // [batch, rows, k] for a, [batch, k, cols] for b (TOSA's rank-3 matmul).
   // macaque has no batch concept.
@@ -64,7 +68,7 @@ FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
     return rewriter.notifyMatchFailure(
         matmul, "only batch=1 matmuls are supported for now");
 
-  return MatmulOperands{aConst, bConst, aType, bType, aType.getShape()[1]};
+  return MatmulOperands{a, bConst, aType, bType, aType.getShape()[1]};
 }
 
 struct MatmulChain {
@@ -90,6 +94,13 @@ std::optional<MatmulChain> matchMatmulChain(Value rescaleInput) {
   return MatmulChain{matmul, addOp, biasConst};
 }
 
+// check if it's an intermediate (layer-to-layer) activation
+bool feedsMatmul(tosa::RescaleOp rescale) {
+  for (Operation* user : rescale->getUsers())
+    if (isa<tosa::MatMulOp>(user)) return true;
+  return false;
+}
+
 // Pre-pass: sum each region's total bytes across the whole block before
 // any conversion runs, so we can dynamically get the offsets
 struct DdrRegionTotals {
@@ -97,21 +108,30 @@ struct DdrRegionTotals {
   uint32_t biasesBytes = 0;
   uint32_t inputBytes = 0;
   uint32_t outputBytes = 0;
+  // Scratch A/B are ping-ponged (reused across layers), so they're sized to
+  // the largest single intermediate activation.
+  uint32_t maxScratchBytes = 0;
 };
 
 DdrRegionTotals sizeRegions(Block& block) {
   DdrRegionTotals totals;
   for (Operation& op : block) {
     if (auto matmul = dyn_cast<tosa::MatMulOp>(op)) {
-      if (auto aConst = matmul.getA().getDefiningOp<tosa::ConstOp>())
-        totals.inputBytes +=
-            byteSizeOf(cast<RankedTensorType>(aConst.getType()));
+      if (!matmul.getA().getDefiningOp<tosa::RescaleOp>()) {
+        if (auto aType = dyn_cast<RankedTensorType>(matmul.getA().getType()))
+          totals.inputBytes += byteSizeOf(aType);
+      }
       if (auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>())
         totals.weightsBytes +=
             byteSizeOf(cast<RankedTensorType>(bConst.getType()));
     } else if (auto rescale = dyn_cast<tosa::RescaleOp>(op)) {
-      totals.outputBytes +=
+      const uint32_t bytes =
           byteSizeOf(cast<RankedTensorType>(rescale.getOutput().getType()));
+      if (feedsMatmul(rescale)) {
+        totals.maxScratchBytes = std::max(totals.maxScratchBytes, bytes);
+      } else {
+        totals.outputBytes += bytes;
+      }
       if (std::optional<MatmulChain> chain =
               matchMatmulChain(rescale.getInput());
           chain && chain->biasConst) {
@@ -130,13 +150,22 @@ class DdrLayout {
     weight_next_ = kWeightBase;
     bias_next_ = alignUp(weight_next_ + totals.weightsBytes);
     input_next_ = alignUp(bias_next_ + totals.biasesBytes);
-    output_next_ = alignUp(input_next_ + totals.inputBytes);
+    scratch_a_base_ = alignUp(input_next_ + totals.inputBytes);
+    scratch_b_base_ = alignUp(scratch_a_base_ + totals.maxScratchBytes);
+    output_next_ = alignUp(scratch_b_base_ + totals.maxScratchBytes);
   }
 
   uint32_t allocateWeight(uint32_t bytes) { return bump(weight_next_, bytes); }
   uint32_t allocateBias(uint32_t bytes) { return bump(bias_next_, bytes); }
   uint32_t allocateInput(uint32_t bytes) { return bump(input_next_, bytes); }
   uint32_t allocateOutput(uint32_t bytes) { return bump(output_next_, bytes); }
+
+  uint32_t allocateScratch() {
+    // ping-pong buffering
+    uint32_t addr = next_is_a_ ? scratch_a_base_ : scratch_b_base_;
+    next_is_a_ = !next_is_a_;
+    return addr;
+  }
 
  private:
   static constexpr uint32_t kWeightBase = 0x0000'1000;
@@ -152,18 +181,26 @@ class DdrLayout {
   uint32_t weight_next_;
   uint32_t bias_next_;
   uint32_t input_next_;
+  uint32_t scratch_a_base_;
+  uint32_t scratch_b_base_;
   uint32_t output_next_;
+  bool next_is_a_ = true;
 };
 
 void emitLoadWeightAndInput(const MatmulOperands& operands, DdrLayout& layout,
+                            const DenseMap<Value, uint32_t>& intermediateAddr,
                             Location loc, ConversionPatternRewriter& rewriter) {
-  const uint32_t inputBytes = byteSizeOf(operands.aType);
   const uint32_t weightBytes = byteSizeOf(operands.bType);
-  const uint32_t inputAddr = layout.allocateInput(inputBytes);
   const uint32_t weightAddr = layout.allocateWeight(weightBytes);
-
   LoadWeightOp::create(rewriter, loc, TypeRange{}, weightAddr,
                        static_cast<uint16_t>(weightBytes));
+
+  const uint32_t inputBytes = byteSizeOf(operands.aType);
+  // read back from wherever the producing rescale's store wrote if is an intermediate
+  auto chained = intermediateAddr.find(operands.a);
+  const uint32_t inputAddr = chained != intermediateAddr.end()
+                                 ? chained->second
+                                 : layout.allocateInput(inputBytes);
   LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
                       static_cast<uint16_t>(inputBytes));
 }
@@ -183,8 +220,11 @@ bool feedsRescale(tosa::MatMulOp matmul) {
 }
 
 struct MatmulToMacaque : public OpConversionPattern<tosa::MatMulOp> {
-  MatmulToMacaque(MLIRContext* ctx, DdrLayout& layout)
-      : OpConversionPattern(ctx), layout(layout) {}
+  MatmulToMacaque(MLIRContext* ctx, DdrLayout& layout,
+                  const DenseMap<Value, uint32_t>& intermediateAddr)
+      : OpConversionPattern(ctx),
+        layout(layout),
+        intermediateAddr(intermediateAddr) {}
 
   LogicalResult matchAndRewrite(
       tosa::MatMulOp op, OpAdaptor /*adaptor*/,
@@ -194,7 +234,7 @@ struct MatmulToMacaque : public OpConversionPattern<tosa::MatMulOp> {
     if (failed(operands)) return failure();
 
     Location loc = op.getLoc();
-    emitLoadWeightAndInput(*operands, layout, loc, rewriter);
+    emitLoadWeightAndInput(*operands, layout, intermediateAddr, loc, rewriter);
     MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
                      static_cast<uint16_t>(operands->rows));
 
@@ -204,6 +244,7 @@ struct MatmulToMacaque : public OpConversionPattern<tosa::MatMulOp> {
 
  private:
   DdrLayout& layout;
+  const DenseMap<Value, uint32_t>& intermediateAddr;
 };
 
 // Pattern 2: tosa.rescale(+ bias tosa.add) -> load_weight, [load_bias],
@@ -224,8 +265,11 @@ LogicalResult checkRescaleIsSupported(tosa::RescaleOp op,
 }
 
 struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
-  RescaleToMacaque(MLIRContext* ctx, DdrLayout& layout)
-      : OpConversionPattern(ctx), layout(layout) {}
+  RescaleToMacaque(MLIRContext* ctx, DdrLayout& layout,
+                   DenseMap<Value, uint32_t>& intermediateAddr)
+      : OpConversionPattern(ctx),
+        layout(layout),
+        intermediateAddr(intermediateAddr) {}
 
   LogicalResult matchAndRewrite(
       tosa::RescaleOp op, OpAdaptor /*adaptor*/,
@@ -260,7 +304,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
     if (failed(operands)) return failure();
 
     Location loc = op.getLoc();
-    emitLoadWeightAndInput(*operands, layout, loc, rewriter);
+    emitLoadWeightAndInput(*operands, layout, intermediateAddr, loc, rewriter);
 
     if (chain->biasConst) {
       auto biasType = cast<RankedTensorType>(chain->biasConst.getType());
@@ -274,18 +318,22 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
                      static_cast<uint16_t>(operands->rows));
     ActivateOp::create(
         rewriter, loc, TypeRange{},
-        /*act_func=*/static_cast<uint8_t>(isa::ActFunc::Passthrough),
+        /*act_func=*/static_cast<uint8_t>(macaque_isa::ActFunc::Passthrough),
         static_cast<uint32_t>(*multiplier), static_cast<uint8_t>(*shift),
         static_cast<uint8_t>(operands->rows));
 
-    // Write the requantized INT8 result tile back to DDR3's Output region which is
-    // treated as final output, not intermediate/scratch because
-    // matmul currently only accepts const.
+    // Write the requantized INT8 result tile back to DDR3: Scratch A/B if a
+    // downstream matmul in this block consumes it (intermediate,
+    // layer-to-layer), Output region if final.
     auto outType = cast<RankedTensorType>(op.getOutput().getType());
     const uint32_t outputBytes = byteSizeOf(outType);
-    const uint32_t outputAddr = layout.allocateOutput(outputBytes);
+    const bool isIntermediate = feedsMatmul(op);
+    const uint32_t outputAddr = isIntermediate
+                                     ? layout.allocateScratch()
+                                     : layout.allocateOutput(outputBytes);
     StoreOp::create(rewriter, loc, TypeRange{}, outputAddr,
                     static_cast<uint16_t>(outputBytes));
+    if (isIntermediate) intermediateAddr[op.getResult()] = outputAddr;
 
     rewriter.eraseOp(op);
     if (chain->biasAdd) rewriter.eraseOp(chain->biasAdd);
@@ -295,6 +343,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
  private:
   DdrLayout& layout;
+  DenseMap<Value, uint32_t>& intermediateAddr;
 };
 
 }  // namespace
@@ -311,9 +360,10 @@ LogicalResult lowerTosaToMacaque(Block& block) {
   target.addIllegalOp<tosa::RescaleOp>();
 
   DdrLayout layout(sizeRegions(block));
+  DenseMap<Value, uint32_t> intermediateAddr;
   RewritePatternSet patterns(ctx);
-  patterns.add<RescaleToMacaque>(ctx, layout);
-  patterns.add<MatmulToMacaque>(ctx, layout);
+  patterns.add<RescaleToMacaque>(ctx, layout, intermediateAddr);
+  patterns.add<MatmulToMacaque>(ctx, layout, intermediateAddr);
 
   SmallVector<Operation*> ops;
   for (Operation& op : block) ops.push_back(&op);

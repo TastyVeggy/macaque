@@ -69,6 +69,27 @@ tosa::RescaleOp buildRescale(OpBuilder& builder, Location loc, Value input,
       perChannel, inputUnsigned, outputUnsigned);
 }
 
+// Builds a tosa.matmul(activation, weight) against a fresh 14x14 tosa.const
+// weight tile, where `activation` may be a tosa.const, a block argument, or
+// (for chain tests) a prior rescale's result. Output keeps activation's own
+// shape, matching buildConstMatmul's K=N=14 convention.
+tosa::MatMulOp buildChainedMatmul(OpBuilder& builder, Location loc,
+                                  Value activation, int8_t weightValue) {
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  auto activationShape = cast<RankedTensorType>(activation.getType()).getShape();
+  auto bTy = RankedTensorType::get({1, 14, 14}, i8Ty);
+  auto b = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, weightValue));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy = RankedTensorType::get(activationShape, i32Ty);
+  return tosa::MatMulOp::create(builder, loc, outTy, activation, b, aZp, bZp);
+}
+
 }  // namespace
 
 TEST(TosaToMacaque, LowersConstMatmulToLoadLoadMatmul) {
@@ -109,7 +130,7 @@ TEST(TosaToMacaque, LowersConstMatmulToLoadLoadMatmul) {
   EXPECT_NE(loadWeight.getDdr3Addr(), loadInput.getDdr3Addr());
 }
 
-TEST(TosaToMacaque, NonConstOperandFailsToConvert) {
+TEST(TosaToMacaque, LowersBlockArgumentActivationToLoadInput) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -132,6 +153,53 @@ TEST(TosaToMacaque, NonConstOperandFailsToConvert) {
       builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
   auto outTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
   tosa::MatMulOp::create(builder, loc, outTy, a, b, aZp, bZp);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  LoadWeightOp loadWeight;
+  LoadInputOp loadInput;
+  MatmulOp matmulOp;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadWeightOp>(op)) loadWeight = o;
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInput = o;
+    if (auto o = dyn_cast<MatmulOp>(op)) matmulOp = o;
+    EXPECT_FALSE(isa<tosa::MatMulOp>(op));
+  }
+
+  ASSERT_TRUE(loadWeight);
+  ASSERT_TRUE(loadInput);
+  ASSERT_TRUE(matmulOp);
+  EXPECT_EQ(loadInput.getByteCount(), 2u * 14u);
+  EXPECT_NE(loadWeight.getDdr3Addr(), loadInput.getDdr3Addr());
+}
+
+TEST(TosaToMacaque, UnhandledActivationProducerFailsToConvert) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto aTy = RankedTensorType::get({1, 2, 14}, i8Ty);
+  auto x = tosa::ConstOp::create(
+      builder, loc, aTy, DenseElementsAttr::get(aTy, static_cast<int8_t>(1)));
+  auto y = tosa::ConstOp::create(
+      builder, loc, aTy, DenseElementsAttr::get(aTy, static_cast<int8_t>(1)));
+  auto a = tosa::AddOp::create(builder, loc, aTy, x.getResult(), y.getResult());
+
+  auto bTy = RankedTensorType::get({1, 14, 14}, i8Ty);
+  auto b = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, static_cast<int8_t>(2)));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
+  tosa::MatMulOp::create(builder, loc, outTy, a.getResult(), b, aZp, bZp);
 
   EXPECT_TRUE(failed(lowerTosaToMacaque(block)));
 }
@@ -285,6 +353,147 @@ TEST(TosaToMacaque, DdrRegionsFollowIntendedLayout) {
   EXPECT_EQ(loadBias.getDdr3Addr(), 4296u);
   EXPECT_EQ(loadInput.getDdr3Addr(), 4352u);
   EXPECT_EQ(store.getDdr3Addr(), 4384u);
+}
+
+TEST(TosaToMacaque, ChainsRescaleOutputIntoNextMatmulViaScratch) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  // Layer 1: const matmul -> rescale. Its result feeds layer 2 below, so
+  // it's intermediate (Scratch A/B), not final output.
+  tosa::MatMulOp matmul1 = buildConstMatmul(builder, loc, /*rows=*/2);
+  tosa::RescaleOp rescale1 =
+      buildRescale(builder, loc, matmul1.getResult(), builder.getIntegerType(8),
+                  /*multiplier=*/1, /*shift=*/0);
+
+  // Layer 2: matmul whose activation is layer 1's rescale result, not a
+  // tosa.const or a block argument.
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  auto bTy = RankedTensorType::get({1, 14, 14}, i8Ty);
+  auto b2 = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, static_cast<int8_t>(3)));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp2 = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp2 = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy2 = RankedTensorType::get({1, 2, 14}, i32Ty);
+  tosa::MatMulOp matmul2 = tosa::MatMulOp::create(
+      builder, loc, outTy2, rescale1.getResult(), b2, aZp2, bZp2);
+
+  // Layer 2's rescale - nothing downstream, so it's the final output.
+  buildRescale(builder, loc, matmul2.getResult(), i8Ty, /*multiplier=*/1,
+              /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  SmallVector<LoadInputOp> loadInputs;
+  SmallVector<StoreOp> stores;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInputs.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op)) stores.push_back(o);
+    EXPECT_FALSE(isa<tosa::MatMulOp>(op));
+    EXPECT_FALSE(isa<tosa::RescaleOp>(op));
+  }
+
+  ASSERT_EQ(loadInputs.size(), 2u);
+  ASSERT_EQ(stores.size(), 2u);
+
+  // Exactly one load_input's address matches exactly one store's address -
+  // that's the chained pair: layer 2 reads back layer 1's intermediate
+  // store instead of getting its own fresh Input-region slot.
+  int matches = 0;
+  for (auto& li : loadInputs)
+    for (auto& s : stores)
+      if (li.getDdr3Addr() == s.getDdr3Addr()) matches++;
+  EXPECT_EQ(matches, 1);
+
+  // The two stores land in different regions (layer 1: scratch, layer 2:
+  // output) and the two load_inputs come from different regions (layer 1:
+  // fresh Input slot, layer 2: chained scratch read) - neither pair may
+  // collide.
+  EXPECT_NE(stores[0].getDdr3Addr(), stores[1].getDdr3Addr());
+  EXPECT_NE(loadInputs[0].getDdr3Addr(), loadInputs[1].getDdr3Addr());
+
+  // Exact region math: weight(196)x2 -> bias(0) -> input(28, layer 1 only)
+  // -> scratch A(28) -> scratch B(28) -> output(28).
+  EXPECT_EQ(loadInputs[0].getDdr3Addr(), 4488u);   // layer 1: fresh Input slot
+  EXPECT_EQ(stores[0].getDdr3Addr(), 4520u);       // layer 1: Scratch A
+  EXPECT_EQ(loadInputs[1].getDdr3Addr(), 4520u);   // layer 2: chained from Scratch A
+  EXPECT_EQ(stores[1].getDdr3Addr(), 4584u);       // layer 2: Output
+}
+
+TEST(TosaToMacaque, FourLayerChainAlternatesScratchAB) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+  auto i8Ty = builder.getIntegerType(8);
+
+  // Layer 1 (intermediate -> Scratch A) -> layer 2 (intermediate ->
+  // Scratch B) -> layer 3 (intermediate -> Scratch A again, reusing layer
+  // 1's slot) -> layer 4 (final -> Output).
+  tosa::MatMulOp matmul1 = buildConstMatmul(builder, loc, /*rows=*/2);
+  tosa::RescaleOp rescale1 =
+      buildRescale(builder, loc, matmul1.getResult(), i8Ty, 1, 0);
+
+  tosa::MatMulOp matmul2 =
+      buildChainedMatmul(builder, loc, rescale1.getResult(), 3);
+  tosa::RescaleOp rescale2 =
+      buildRescale(builder, loc, matmul2.getResult(), i8Ty, 1, 0);
+
+  tosa::MatMulOp matmul3 =
+      buildChainedMatmul(builder, loc, rescale2.getResult(), 5);
+  tosa::RescaleOp rescale3 =
+      buildRescale(builder, loc, matmul3.getResult(), i8Ty, 1, 0);
+
+  tosa::MatMulOp matmul4 =
+      buildChainedMatmul(builder, loc, rescale3.getResult(), 7);
+  buildRescale(builder, loc, matmul4.getResult(), i8Ty, 1, 0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  SmallVector<LoadInputOp> loadInputs;
+  SmallVector<StoreOp> stores;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInputs.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op)) stores.push_back(o);
+    EXPECT_FALSE(isa<tosa::MatMulOp>(op));
+    EXPECT_FALSE(isa<tosa::RescaleOp>(op));
+  }
+
+  ASSERT_EQ(loadInputs.size(), 4u);
+  ASSERT_EQ(stores.size(), 4u);
+
+  // Program order is preserved by conversion, so stores/loadInputs appear
+  // in layer order: [layer1, layer2, layer3, layer4].
+  const uint32_t scratchA = stores[0].getDdr3Addr();
+  const uint32_t scratchB = stores[1].getDdr3Addr();
+  EXPECT_NE(scratchA, scratchB);
+
+  // Ping-pong: layer 1 -> A, layer 2 -> B, layer 3 -> A again (reusing
+  // layer 1's slot - safe, since layer 2 already consumed it by then).
+  EXPECT_EQ(stores[2].getDdr3Addr(), scratchA);
+  // Layer 4 is final output, not scratch - must not collide with either.
+  EXPECT_NE(stores[3].getDdr3Addr(), scratchA);
+  EXPECT_NE(stores[3].getDdr3Addr(), scratchB);
+
+  // Each layer's load_input reads back exactly the previous layer's store
+  // (chained), except layer 1, which gets its own fresh Input-region slot.
+  EXPECT_NE(loadInputs[0].getDdr3Addr(), scratchA);
+  EXPECT_NE(loadInputs[0].getDdr3Addr(), scratchB);
+  EXPECT_EQ(loadInputs[1].getDdr3Addr(), scratchA);  // layer 2 <- layer 1's store
+  EXPECT_EQ(loadInputs[2].getDdr3Addr(), scratchB);  // layer 3 <- layer 2's store
+  EXPECT_EQ(loadInputs[3].getDdr3Addr(), scratchA);  // layer 4 <- layer 3's store (A again)
 }
 
 TEST(TosaToMacaque, PerChannelRescaleFailsToConvert) {
