@@ -19,12 +19,15 @@ add_mlir_dialect_library(macaque_codegen
     lib/Dialect/MacaqueDialect.cpp
     lib/Dialect/MacaqueOps.cpp
     lib/Target/BinaryEmitter.cpp
+    lib/Conversion/TosaToMacaque.cpp
 
     DEPENDS
     MLIRMacaqueOpsIncGen
 
     LINK_LIBS PUBLIC
     MLIRIR
+    MLIRTosaDialect
+    MLIRTransforms
 )
 
 target_compile_definitions(macaque_codegen PUBLIC ${LLVM_DEFINITIONS})

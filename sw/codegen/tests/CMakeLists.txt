@@ -8,6 +8,7 @@ add_executable(test_codegen
     test_sync_op.cpp
     test_binary_emitter.cpp
     test_closed_loop.cpp
+    test_tosa_to_macaque.cpp
 )
 
 target_link_libraries(test_codegen
@@ -17,6 +18,7 @@ target_link_libraries(test_codegen
         macaque_common
         macaque_simulator
         MLIRIR
+        MLIRTosaDialect
         GTest::gtest_main
 )
 
