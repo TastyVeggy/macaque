@@ -191,7 +191,7 @@ The top byte of the 4-byte address selects the target: `0x40` goes to control re
 - Python 3.12 (For hardware simulation and testing)
     - Install packages in `requirements.txt`
 - llvm with mlir
-    - Can be installed and built via [this script](scripts/build_llvm.sh)
+    - Can be installed and built via [this script](build_llvm_mlir.sh)
 
 ### Hardware
 To do a full build and program the FPGA:
