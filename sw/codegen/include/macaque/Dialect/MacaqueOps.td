@@ -41,4 +41,83 @@ def Macaque_LoadBiasOp : Macaque_Op<"load_bias"> {
   let hasVerifier = 1;
 }
 
+def Macaque_LoadInputOp : Macaque_Op<"load_input"> {
+  let summary = "Load an activation (input) tile from DDR3 into the on-chip activation buffer";
+  let description = [{
+    Corresponds to OP_LOAD_INPUT (opcode 0x2).
+    ddr3_addr occupies instruction bits [55:28] (28 bits) and byte_count
+    occupies [27:12] (16 bits).
+  }];
+
+  let arguments = (ins
+    UI32Attr:$ddr3_addr,
+    UI16Attr:$byte_count
+  );
+
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Macaque_MatmulOp : Macaque_Op<"matmul"> {
+  let summary = "Run the systolic array over the currently-loaded weight/input tiles";
+  let description = [{
+    Corresponds to OP_MATMUL (opcode 0x3). Reads whatever is currently in the
+    on-chip weight and activation buffers (loaded by prior load_weight/
+    load_input ops) and produces INT32 results.
+    acc_mode occupies bit [59] and tile_params occupies bits [11:0]
+    (12 bits).
+  }];
+
+  let arguments = (ins
+    UI1Attr:$acc_mode,
+    UI16Attr:$tile_params
+  );
+
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Macaque_ActivateOp : Macaque_Op<"activate"> {
+  let summary = "Requantize INT32 results to INT8, applying an activation function";
+  let description = [{
+    Corresponds to OP_ACTIVATE (opcode 0x4). 
+  }];
+
+  let arguments = (ins
+    UI8Attr:$act_func,
+    UI32Attr:$act_scale_m,
+    UI8Attr:$act_scale_shift,
+    UI8Attr:$act_num_rows
+  );
+
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Macaque_StoreOp : Macaque_Op<"store"> {
+  let summary = "Write the INT8 result tile from the on-chip output buffer back to DDR3";
+  let description = [{
+    Corresponds to OP_STORE (opcode 0x5).
+    ddr3_addr occupies instruction bits [55:28] (28 bits) and byte_count
+    occupies [27:12] (16 bits).
+  }];
+
+  let arguments = (ins
+    UI32Attr:$ddr3_addr,
+    UI16Attr:$byte_count
+  );
+
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Macaque_SyncOp : Macaque_Op<"sync"> {
+  let summary = "Barrier between the DMA and compute lanes";
+  let description = [{
+    Corresponds to OP_SYNC (opcode 0x6).
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
 #endif // MACAQUE_OPS
