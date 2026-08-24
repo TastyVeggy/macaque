@@ -180,11 +180,6 @@ The top byte of the 4-byte address selects the target: `0x40` goes to control re
 | `0x4000_0000` – `0x40FF_FFFF` | - | register map |
 | `0x5000_0000` – `0x50FF_FFFF` | - | instruction memory (`IMEM_BASE`, 4096 × 64-bit words) |
 
-
-### DDR3 layout
-
-TBD as compiler is built
-
 ---
 
 ## Build

@@ -170,12 +170,14 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   LoadBiasOp loadBias;
   MatmulOp matmulOp;
   ActivateOp activate;
+  StoreOp store;
   for (Operation& op : block) {
     if (auto o = dyn_cast<LoadWeightOp>(op)) loadWeight = o;
     if (auto o = dyn_cast<LoadInputOp>(op)) loadInput = o;
     if (auto o = dyn_cast<LoadBiasOp>(op)) loadBias = o;
     if (auto o = dyn_cast<MatmulOp>(op)) matmulOp = o;
     if (auto o = dyn_cast<ActivateOp>(op)) activate = o;
+    if (auto o = dyn_cast<StoreOp>(op)) store = o;
     EXPECT_FALSE(isa<tosa::MatMulOp>(op));
     EXPECT_FALSE(isa<tosa::RescaleOp>(op));
   }
@@ -184,6 +186,7 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   ASSERT_TRUE(loadInput);
   ASSERT_TRUE(matmulOp);
   ASSERT_TRUE(activate);
+  ASSERT_TRUE(store);
   EXPECT_FALSE(loadBias);
 
   EXPECT_EQ(activate.getActScaleM(), 12345u);
@@ -191,6 +194,11 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   EXPECT_EQ(activate.getActNumRows(), 2u);
   EXPECT_EQ(static_cast<isa::ActFunc>(activate.getActFunc()),
             isa::ActFunc::Passthrough);
+
+  // Output tile: rows=2, 14 channels, INT8 -> 28 bytes.
+  EXPECT_EQ(store.getByteCount(), 2u * 14u);
+  EXPECT_NE(store.getDdr3Addr(), loadWeight.getDdr3Addr());
+  EXPECT_NE(store.getDdr3Addr(), loadInput.getDdr3Addr());
 }
 
 TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
@@ -218,10 +226,12 @@ TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   LoadBiasOp loadBias;
   MatmulOp matmulOp;
   ActivateOp activate;
+  StoreOp store;
   for (Operation& op : block) {
     if (auto o = dyn_cast<LoadBiasOp>(op)) loadBias = o;
     if (auto o = dyn_cast<MatmulOp>(op)) matmulOp = o;
     if (auto o = dyn_cast<ActivateOp>(op)) activate = o;
+    if (auto o = dyn_cast<StoreOp>(op)) store = o;
     EXPECT_FALSE(isa<tosa::MatMulOp>(op));
     EXPECT_FALSE(isa<tosa::AddOp>(op));
     EXPECT_FALSE(isa<tosa::RescaleOp>(op));
@@ -230,7 +240,51 @@ TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   ASSERT_TRUE(loadBias);
   ASSERT_TRUE(matmulOp);
   ASSERT_TRUE(activate);
+  ASSERT_TRUE(store);
   EXPECT_EQ(loadBias.getByteCount(), 14u * sizeof(int32_t));
+  EXPECT_EQ(store.getByteCount(), 2u * 14u);
+}
+
+// Follows layout in accordance to conventions set at sw/docs/MEMORY_LAYOUT.md
+TEST(TosaToMacaque, DdrRegionsFollowIntendedLayout) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
+  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  auto bias = tosa::ConstOp::create(
+      builder, loc, biasTy, DenseElementsAttr::get(biasTy, 7));
+  auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
+                                 matmul.getResult(), bias.getResult());
+  buildRescale(builder, loc, add.getResult(), builder.getIntegerType(8),
+              /*multiplier=*/1, /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  LoadWeightOp loadWeight;
+  LoadBiasOp loadBias;
+  LoadInputOp loadInput;
+  StoreOp store;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadWeightOp>(op)) loadWeight = o;
+    if (auto o = dyn_cast<LoadBiasOp>(op)) loadBias = o;
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInput = o;
+    if (auto o = dyn_cast<StoreOp>(op)) store = o;
+  }
+  ASSERT_TRUE(loadWeight);
+  ASSERT_TRUE(loadBias);
+  ASSERT_TRUE(loadInput);
+  ASSERT_TRUE(store);
+
+  EXPECT_EQ(loadWeight.getDdr3Addr(), 0x1000u);
+  EXPECT_EQ(loadBias.getDdr3Addr(), 4296u);
+  EXPECT_EQ(loadInput.getDdr3Addr(), 4352u);
+  EXPECT_EQ(store.getDdr3Addr(), 4384u);
 }
 
 TEST(TosaToMacaque, PerChannelRescaleFailsToConvert) {
