@@ -73,7 +73,7 @@ bitstream: $(BIT_STAMP)
 
 program: $(PROGRAM_STAMP)
 
-run_test: | validate
+run-test: | validate
 	@test -f "$(HW_TEST)" || { \
 		echo ""; echo "ERROR: host script not found: $(HW_TEST)"; \
 		echo "Set HW_TEST=path (relative to hw/) or PORT=..."; exit 1; }; \

@@ -8,15 +8,15 @@ ALL_FOLDERS := $(notdir $(shell find $(TB_DIR) -maxdepth 1 -mindepth 1 -type d))
 XSIM_TBS   := $(foreach tb,$(ALL_FOLDERS),$(if $(wildcard $(TB_DIR)/$(tb)/*.sv),$(tb)))
 COCO_TBS   := $(foreach tb,$(ALL_FOLDERS),$(if $(wildcard $(TB_DIR)/$(tb)/*.py),$(tb)))
 
-.PHONY: all run run_all run_coco run_xsim list clean
+.PHONY: all run run-all run-coco run-xsim list clean
 
-all: run_all
+all: run-all
 
-sim_hw:
+sim-hw:
 	@if [ -z "$(TB)" ]; then \
 		$(MAKE) help; \
 	else \
-		$(MAKE) execute_sim; \
+		$(MAKE) execute-sim; \
 	fi
 
 define run_summary
@@ -28,11 +28,11 @@ define run_summary
 	rm -f .run_all_results
 endef
 
-run_coco:
+run-coco:
 	@rm -f .run_all_results; \
 	echo "=== Cocotb (Python) suites ==="; \
 	for tb in $(COCO_TBS); do \
-		out=$$($(MAKE) -s sim_hw TB=$$tb MODE=cocotb 2>&1); \
+		out=$$($(MAKE) -s sim-hw TB=$$tb MODE=cocotb 2>&1); \
 		summary=$$(printf '%s\n' "$$out" | grep -oE "TESTS=[0-9]+ PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+" | tail -1); \
 		if [ -z "$$summary" ]; then summary="TESTS=? PASS=? FAIL=? SKIP=?"; fi; \
 		printf '%-18s %s\n' "[cocotb] $$tb" "$$summary" >> .run_all_results; \
@@ -40,7 +40,7 @@ run_coco:
 	done; \
 	$(run_summary)
 
-run_xsim:
+run-xsim:
 	@rm -f .run_all_results; \
 	echo "=== XSIM (SystemVerilog) suites ==="; \
 	for tb in $(XSIM_TBS); do \
@@ -52,10 +52,10 @@ run_xsim:
 	done; \
 	$(run_summary)
 
-run_all:
-	@$(MAKE) -s run_coco; \
+run-all:
+	@$(MAKE) -s run-coco; \
 	rc=$$?; \
-	$(MAKE) -s run_xsim; \
+	$(MAKE) -s run-xsim; \
 	rc=$$(( rc + $$? )); \
 	exit $$rc
 
@@ -66,13 +66,13 @@ list:
 
 help:
 	@echo "Available XSIM (SystemVerilog) TBs:"
-	@$(foreach tb,$(XSIM_TBS),echo "  - make sim_hw TB=$(tb) MODE=xsim";)
+	@$(foreach tb,$(XSIM_TBS),echo "  - make sim-hw TB=$(tb) MODE=xsim";)
 	@echo ""
 	@echo "Available Cocotb (Python) TBs:"
-	@$(foreach tb,$(COCO_TBS),echo "  - make sim_hw TB=$(tb) MODE=cocotb";)
+	@$(foreach tb,$(COCO_TBS),echo "  - make sim-hw TB=$(tb) MODE=cocotb";)
 
 
-execute_sim:
+execute-sim:
 ifeq ($(MODE),xsim)
 	@if echo "$(XSIM_TBS)" | grep -qw "$(TB)"; then \
 		./run_sim.sh $(TB); \
