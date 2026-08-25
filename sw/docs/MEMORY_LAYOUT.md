@@ -36,6 +36,6 @@ For a region holding more than one item (Weights, Biases, Input, Output), `align
 no "seed from zero" option. A matmul with no real bias (no `tosa.add` in the source model)
 still needs *something* loaded there, or it silently inherits whatever a previous layer's
 `load_bias` last put in the buffer. Rather than a bias-clear opcode (which doesn't exist), the
-compiler points every no-bias matmul's `load_bias` at one shared, fixed, always-zero slot which is
-sized to the largest single no-bias matmul's output-channel count. The runtime must stage this region as zero once, the same way it
-stages any other region as it is not implicitly zeroed by hardware.
+compiler points every no-bias matmul's `load_bias` at one shared, fixed, always-zero 56-byte
+(14-channel) slot. The runtime must stage this region as zero once, the same way it stages any
+other region as it is not implicitly zeroed by hardware.

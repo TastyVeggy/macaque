@@ -97,6 +97,7 @@ module dma_lane (
   typedef enum logic [1:0] {
     IDLE,
     WAIT,
+    NOTIFY,
     SYNC
   } state_t;
 
@@ -165,8 +166,13 @@ module dma_lane (
             dma_load_done_notify <= 1'b1;
             dma_load_buf_type    <= issue_buf_type;
             dma_load_bank        <= issue_loaded_bank;
-            state                <= IDLE;
+            state                <= NOTIFY;
           end
+        end
+
+        NOTIFY: begin
+          busy_r <= 1'b1;
+          state  <= IDLE;
         end
 
         SYNC: begin

@@ -83,24 +83,29 @@ TEST(Engine, LoadMatmulActivateStore) {
                            0,
                            kWeightAddr,
                            static_cast<uint16_t>(kByteCount),
+                           0,
                            0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0};
+  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0,
+                           0};
   const Instruction load_a{Opcode::LoadInput,
                            false,
                            0,
                            kActAddr,
                            static_cast<uint16_t>(kByteCount),
+                           0,
                            0};
   const Instruction mm{
-      Opcode::Matmul, false, 0, 0, 0, static_cast<uint16_t>(kArraySize)};
+      Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
   const Instruction act{Opcode::Activate,
                         false,
                         static_cast<uint8_t>(ActFunc::Relu),
                         kM,
                         kShift,
-                        static_cast<uint16_t>(kArraySize)};
+                        0,
+                        static_cast<uint8_t>(kArraySize)};
   const Instruction store{
-      Opcode::Store, false, 0, kOutAddr, static_cast<uint16_t>(kByteCount), 0};
+      Opcode::Store,    false, 0, kOutAddr,
+      static_cast<uint16_t>(kByteCount), 0, 0};
 
   std::vector<uint64_t> program;
   for (const Instruction& ins : {load_w, load_b, load_a, mm, act, store}) {
@@ -152,24 +157,29 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
                            0,
                            kWeightAddr,
                            static_cast<uint16_t>(kByteCount),
+                           0,
                            0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0};
+  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0,
+                           0};
   const Instruction load_a{Opcode::LoadInput,
                            false,
                            0,
                            kActAddr,
                            static_cast<uint16_t>(kByteCount),
+                           0,
                            0};
   const Instruction mm{
-      Opcode::Matmul, false, 0, 0, 0, static_cast<uint16_t>(kArraySize)};
+      Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
   const Instruction act{Opcode::Activate,
                         false,
                         static_cast<uint8_t>(ActFunc::Relu),
                         kM,
                         kShift,
-                        static_cast<uint16_t>(kArraySize)};
+                        0,
+                        static_cast<uint8_t>(kArraySize)};
   const Instruction store{
-      Opcode::Store, false, 0, kOutAddr, static_cast<uint16_t>(kByteCount), 0};
+      Opcode::Store,    false, 0, kOutAddr,
+      static_cast<uint16_t>(kByteCount), 0, 0};
 
   std::vector<uint64_t> program;
   for (const Instruction& ins : {load_w, load_b, load_a, mm, act, store}) {

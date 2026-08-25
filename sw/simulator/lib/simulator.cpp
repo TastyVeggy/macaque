@@ -1,6 +1,7 @@
 #include "macaque/sim/simulator.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 
@@ -31,6 +32,8 @@ void Simulator::execute(const macaque::common::isa::Instruction& ins) {
     case Opcode::LoadWeight:
     case Opcode::LoadInput: {
       const size_t rows = ins.byte_count / kArraySize;
+      assert(rows <= static_cast<size_t>(kBramDepth) &&
+             "load exceeds the on-chip buffer depth (M not chunked to fit)");
       std::array<std::array<int8_t, kArraySize>, kBramDepth>& buf =
           (ins.opcode == Opcode::LoadWeight) ? weight_ : act_;
       for (size_t r = 0; r < rows; ++r) {
@@ -57,15 +60,18 @@ void Simulator::execute(const macaque::common::isa::Instruction& ins) {
       break;
     }
     case Opcode::Matmul: {
-      const size_t m = ins.tile_params & 0xFF;
+      const size_t m = ins.tile_params;
+      const size_t rowBase = macaque::common::isa::mat_row_base(ins);
+      assert(rowBase + m <= static_cast<size_t>(kBramDepth) &&
+             "mat_row_base + rows exceeds the on-chip buffer depth");
       for (size_t r = 0; r < m; ++r) {
         for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
-          int32_t acc = ins.acc_mode ? out_[r][c] : bias_[0][c];
+          int32_t acc = ins.acc_mode ? out_[rowBase + r][c] : bias_[0][c];
           for (size_t k = 0; k < static_cast<size_t>(kArraySize); ++k) {
             acc += static_cast<int32_t>(act_[r][k]) *
                    static_cast<int32_t>(weight_[k][c]);
           }
-          out_[r][c] = acc;
+          out_[rowBase + r][c] = acc;
         }
       }
       break;
@@ -75,9 +81,12 @@ void Simulator::execute(const macaque::common::isa::Instruction& ins) {
       const uint32_t mm = macaque::common::isa::scale_m(ins);
       const uint32_t shift = macaque::common::isa::scale_shift(ins);
       const auto func = macaque::common::isa::act_func(ins);
+      const size_t rowBase = macaque::common::isa::act_row_base(ins);
+      assert(rowBase + m <= static_cast<size_t>(kBramDepth) &&
+             "act_row_base + rows exceeds the on-chip buffer depth");
       for (size_t r = 0; r < m; ++r) {
         for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
-          act_[r][c] = requantizeAndActivate(out_[r][c], mm, shift, func);
+          act_[r][c] = requantizeAndActivate(out_[rowBase + r][c], mm, shift, func);
         }
       }
       break;

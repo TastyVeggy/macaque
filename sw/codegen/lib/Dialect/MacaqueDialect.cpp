@@ -1,6 +1,6 @@
-#include "macaque/Dialect/MacaqueDialect.h"
+#include "macaque/Dialect/MacaqueDialect.hpp"
 
-#include "macaque/Dialect/MacaqueOps.h"
+#include "macaque/Dialect/MacaqueOps.hpp"
 #include "macaque/Dialect/MacaqueOpsDialect.cpp.inc"
 
 void mlir::macaque::MacaqueDialect::initialize() {

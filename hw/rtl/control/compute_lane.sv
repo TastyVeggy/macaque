@@ -21,6 +21,17 @@ module compute_lane (
     output logic act_bank_sel,
     output logic bias_bank_sel,
 
+    output logic weight_hold,
+
+    // out_buffer row base for this M-chunk's accumulator. 
+    // Weight-hold combined with K-tiling needs *several*
+    // M-chunks' partial sums resident in out_buffer at once
+    output npu_pkg::bram_addr_t mat_row_base,
+
+    // out_buffer row base for the M-chunk being drained
+    output npu_pkg::bram_addr_t act_row_base,
+    output logic                act_bank_hold,
+
     // Barrier
     output logic sync_reached,
     input  logic sync_release,
@@ -106,6 +117,7 @@ module compute_lane (
   // Latched instruction fields consumed after the FIFO pop.
   logic   [                          11:0] cur_tile_params;
   logic                                    cur_acc_mode;
+  npu_pkg::bram_addr_t                     cur_mat_row_base;
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -137,6 +149,10 @@ module compute_lane (
       weight_bank_sel          <= '0;
       act_bank_sel             <= '0;
       bias_bank_sel            <= '0;
+      weight_hold              <= '0;
+      mat_row_base             <= '0;
+      act_row_base             <= '0;
+      act_bank_hold            <= '0;
       comp_matmul_start_notify <= '0;
       comp_matmul_drain_notify <= '0;
       sync_reached             <= '0;
@@ -148,6 +164,7 @@ module compute_lane (
       drain_done               <= '0;
       cur_tile_params          <= '0;
       cur_acc_mode             <= '0;
+      cur_mat_row_base         <= '0;
 
     end else begin
       fifo_pop                 <= '0;
@@ -172,10 +189,13 @@ module compute_lane (
             case (d_comp.opcode)
 
               npu_pkg::OP_MATMUL: begin
-                cur_tile_params <= d_comp.tile_params;
-                cur_acc_mode    <= d_comp.acc_mode;
-                fifo_pop        <= '1;
-                state           <= MATMUL_WAIT;
+                automatic npu_pkg::mat_instr_t d_mat = npu_pkg::decode_mat_instr(fifo_data);
+                cur_tile_params  <= 12'(d_mat.tile_params);
+                cur_acc_mode     <= d_mat.acc_mode;
+                weight_hold      <= d_mat.weight_hold;
+                cur_mat_row_base <= d_mat.mat_row_base;
+                fifo_pop         <= '1;
+                state            <= MATMUL_WAIT;
               end
 
               npu_pkg::OP_ACTIVATE: begin
@@ -187,7 +207,9 @@ module compute_lane (
                 act_scale_m     <= d_act.act_scale_m;
                 act_scale_shift <= d_act.act_scale_shift;
                 act_func        <= d_act.act_func;
-                out_bank_sel    <= ~out_bank_sel;
+                act_row_base    <= d_act.act_row_base;
+                act_bank_hold   <= d_act.act_bank_hold;
+                out_bank_sel    <= d_act.act_bank_hold ? out_bank_sel : ~out_bank_sel;
                 state           <= ACTIVATE_WAIT;
               end
 
@@ -223,13 +245,14 @@ module compute_lane (
           // bias only needed for first k-tile (acc_mode = 0), subsequent will seed from out buffer
           if (weight_rdy && act_rdy && (cur_acc_mode ? 1'b1 : bias_rdy)) begin
             comp_matmul_start_notify <= '1;
-            weight_bank_sel          <= ~weight_bank_sel;
+            weight_bank_sel          <= weight_hold ? weight_bank_sel : ~weight_bank_sel;
             act_bank_sel             <= ~act_bank_sel;
-            bias_bank_sel            <= ~bias_bank_sel;
+            bias_bank_sel            <= weight_hold ? bias_bank_sel : ~bias_bank_sel;
             wl_count                 <= '0;
             al_count                 <= '0;
             acc_mode                 <= cur_acc_mode;
             tile_params              <= cur_tile_params;
+            mat_row_base             <= cur_mat_row_base;
             state                    <= WEIGHT_LOAD;
           end
           // else: stall until buffers are loaded
@@ -259,7 +282,7 @@ module compute_lane (
           bb_re <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]);
           bb_raddr <= al_count;
           ob_fb_re <= (al_count < cur_tile_params[$clog2(npu_pkg::BRAM_DEPTH)-1:0]) && cur_acc_mode;
-          ob_fb_raddr <= al_count;
+          ob_fb_raddr <= cur_mat_row_base + al_count;
           act_valid <= (al_count > 0);
           bias_valid <= (al_count > 0);
 

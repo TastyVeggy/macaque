@@ -127,6 +127,8 @@ module npu_core (
   logic [27:0] act_scale_m;
   logic [4:0] act_scale_shift;
   npu_pkg::act_func_t act_func;
+  npu_pkg::bram_addr_t mat_row_base, act_row_base;
+  logic act_bank_hold;
   logic [npu_pkg::ISA_DDR_ADDR_W-1:0] seq_ddr3_addr;
   logic [npu_pkg::ISA_BYTE_CNT_W-1:0] seq_byte_count;
   npu_pkg::buffer_type_t load_target;
@@ -162,6 +164,9 @@ module npu_core (
       .act_scale_m,
       .act_scale_shift,
       .act_func,
+      .mat_row_base,
+      .act_row_base,
+      .act_bank_hold,
       .load_done,
       .store_done,
       .wb_re,
@@ -236,12 +241,13 @@ module npu_core (
 
   always_ff @(posedge clk) begin
     if (rst || seq_rst) drain_addr <= '0;
-    else if (matmul_start) drain_addr <= '0;
+    else if (matmul_start) drain_addr <= mat_row_base;
     else if (array_drain_valid) drain_addr <= drain_addr + 1;
   end
 
-  // Out-buffer read port is shared between ACTIVATE (rd_sel=0) and the
-  // acc_mode=1 partial-sum feedback (rd_sel=1)
+  // Out-buffer read port is shared between ACTIVATE (rd_sel=0, or rd_sel=1
+  // when act_bank_hold) and the acc_mode=1 partial-sum feedback
+  // (rd_sel=1).
   out_buffer ob_inst (
       .clk_sa  (clk),
       .sa_we   (array_drain_valid),
@@ -249,7 +255,7 @@ module npu_core (
       .sa_wdata(array_drain_data),
       .rd_re   (activate_ob_re | ob_fb_re),
       .rd_raddr(ob_fb_re ? ob_fb_raddr : activate_ob_raddr),
-      .rd_sel  (ob_fb_re),
+      .rd_sel  (ob_fb_re | act_bank_hold),
       .rd_rdata(ob_rdata),
       .out_bank_sel
   );
@@ -377,6 +383,7 @@ module npu_core (
       .scale_m    (act_scale_m),
       .scale_shift(act_scale_shift),
       .act_func   (act_func),
+      .row_base   (act_row_base),
       .ob_re      (activate_ob_re),
       .ob_raddr   (activate_ob_raddr),
       .ob_rdata,

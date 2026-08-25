@@ -20,6 +20,8 @@ module dep_tracker (
     input logic comp_act_bank_sel,
     input logic comp_bias_bank_sel,
 
+    input logic comp_weight_hold,
+
     // Dep tracker inform compute lane when each buffer is ready
     output logic weight_rdy,
     output logic act_rdy,
@@ -40,8 +42,12 @@ module dep_tracker (
   npu_pkg::slot_state_t bias_slot[2];
   npu_pkg::slot_state_t act_slot[2];
 
-  assign weight_rdy          = (weight_slot[~comp_weight_bank_sel] == npu_pkg::SLOT_LOADED);
-  assign bias_rdy            = (bias_slot[~comp_bias_bank_sel] == npu_pkg::SLOT_LOADED);
+  assign weight_rdy          = comp_weight_hold
+      ? 1'b1
+      : (weight_slot[~comp_weight_bank_sel] == npu_pkg::SLOT_LOADED);
+  assign bias_rdy            = comp_weight_hold
+      ? 1'b1
+      : (bias_slot[~comp_bias_bank_sel] == npu_pkg::SLOT_LOADED);
   assign act_rdy             = (act_slot[~comp_act_bank_sel] == npu_pkg::SLOT_LOADED);
 
   assign dma_weight_can_load = (weight_slot[~comp_weight_bank_sel] == npu_pkg::SLOT_EMPTY);

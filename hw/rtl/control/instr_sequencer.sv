@@ -32,6 +32,11 @@ module instr_sequencer (
     output logic               [ 4:0] act_scale_shift,
     output npu_pkg::act_func_t        act_func,
 
+    // out_buffer row-base addressing
+    output npu_pkg::bram_addr_t mat_row_base,
+    output npu_pkg::bram_addr_t act_row_base,
+    output logic                act_bank_hold,
+
     // LOAD/STORE: to DMA
     output logic                  load_req,
     output logic                  store_req,
@@ -101,6 +106,7 @@ module instr_sequencer (
   logic        comp_mac_active;
   logic        comp_error;
   logic comp_matmul_start_notify, comp_matmul_drain_notify;
+  logic comp_weight_hold;
   logic        comp_store_req;
   logic [npu_pkg::ISA_DDR_ADDR_W-1:0] comp_ddr3_addr;
   logic [npu_pkg::ISA_BYTE_CNT_W-1:0] comp_byte_count;
@@ -199,6 +205,10 @@ module instr_sequencer (
       .weight_bank_sel         (int_weight_bank_sel),
       .act_bank_sel            (int_act_bank_sel),
       .bias_bank_sel           (int_bias_bank_sel),
+      .weight_hold             (comp_weight_hold),
+      .mat_row_base            (mat_row_base),
+      .act_row_base            (act_row_base),
+      .act_bank_hold           (act_bank_hold),
       .sync_reached            (sync_reached_comp),
       .sync_release            (sync_release),
       .dma_issue               (dma_issue),
@@ -245,6 +255,7 @@ module instr_sequencer (
       .comp_weight_bank_sel    (int_weight_bank_sel),
       .comp_act_bank_sel       (int_act_bank_sel),
       .comp_bias_bank_sel      (int_bias_bank_sel),
+      .comp_weight_hold        (comp_weight_hold),
       .weight_rdy              (weight_rdy),
       .act_rdy                 (act_rdy),
       .bias_rdy                (bias_rdy),

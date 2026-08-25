@@ -1,6 +1,6 @@
 #pragma once
 
-#include "macaque/Dialect/MacaqueDialect.h"
+#include "macaque/Dialect/MacaqueDialect.hpp"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"

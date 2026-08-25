@@ -2,7 +2,22 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
-from matmul_helpers import AxiRam, build, ref_matmul, s8
+from matmul_helpers import (
+    ARRAY,
+    ACT_PASSTHROUGH,
+    AxiRam,
+    OP_ACTIVATE,
+    OP_LOAD_ACT,
+    OP_LOAD_B,
+    OP_LOAD_W,
+    OP_MATMUL,
+    OP_STORE,
+    build,
+    enc,
+    flatten_i32,
+    ref_matmul,
+    s8,
+)
 
 
 REG_CTRL = 0x00
@@ -278,3 +293,284 @@ async def test_matmul_dma_burst_crosses_4k_boundary(dut):
     0x2068. AxiRam._check_4k asserts if dma_unit ever fails to split there.
     """
     await _run_matmul(dut, 14, 14, 14, weight_base=0x1FA0)
+
+
+@cocotb.test()
+async def test_matmul_weight_hold_m_streaming(dut):
+    """MATMUL target[0] (weight_hold): stream several M-chunks through one
+    already-loaded weight/bias bank without reloading, then drop back to a
+    normal (unheld) load on the *other* bank to prove it's still usable.
+
+    Hand-built instead of matmul_helpers.build() because build() always
+    reloads weight/bias per M-chunk - this test needs a stream that
+    deliberately doesn't, to exercise dep_tracker's held-bank bypass
+    (hw/rtl/control/dep_tracker.sv) and compute_lane's conditional bank
+    toggle (hw/rtl/control/compute_lane.sv).
+    """
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await _reset(dut)
+
+    ram = AxiRam(dut)
+    cocotb.start_soon(ram.run())
+    cocotb.start_soon(_monitor(dut))
+
+    K = N = ARRAY
+    W1 = [[((k + n) % 3) - 1 for n in range(N)] for k in range(K)]
+    # Deliberately different from W1 so a stale-bank-1-reuse bug (RTL fails to
+    # actually switch to the freshly-loaded bank 0) shows up as a mismatch
+    # rather than accidentally computing the right answer anyway.
+    W2 = [[((2 * k + n + 1) % 3) - 1 for n in range(N)] for k in range(K)]
+
+    def gen_a_chunk(seed):
+        return [[((m + k + seed) % 3) - 1 for k in range(K)] for m in range(ARRAY)]
+
+    # Seeds 0,1,2,4 (not 0,1,2,3): the formula is periodic mod 3 in seed, so
+    # seed=3 would silently produce the same matrix as seed=0, masking a
+    # stale-data bug in chunk3 as an accidental pass.
+    A0, A1, A2, A3 = (gen_a_chunk(s) for s in (0, 1, 2, 4))
+
+    W1_ADDR, B1_ADDR = 0x1000, 0x6000
+    W2_ADDR, B2_ADDR = 0x1200, 0x6100
+    A0_ADDR, A1_ADDR, A2_ADDR, A3_ADDR = 0x8000, 0x8200, 0x8400, 0x8600
+    OUT0_ADDR, OUT1_ADDR, OUT2_ADDR, OUT3_ADDR = 0x10000, 0x10200, 0x10400, 0x10600
+
+    def weight_bytes(W):
+        return [s8(W[k][n]) for k in range(ARRAY) for n in range(ARRAY)]
+
+    def act_bytes(A):
+        return [s8(A[m][k]) for m in range(ARRAY) for k in range(ARRAY)]
+
+    for addr, data in [
+        (W1_ADDR, weight_bytes(W1)),
+        (B1_ADDR, flatten_i32([0] * ARRAY)),
+        (W2_ADDR, weight_bytes(W2)),
+        (B2_ADDR, flatten_i32([0] * ARRAY)),
+        (A0_ADDR, act_bytes(A0)),
+        (A1_ADDR, act_bytes(A1)),
+        (A2_ADDR, act_bytes(A2)),
+        (A3_ADDR, act_bytes(A3)),
+    ]:
+        ram.write_bytes(addr, data)
+
+    instrs = [
+        enc(OP_LOAD_W, ddr3_addr=W1_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_LOAD_B, ddr3_addr=B1_ADDR, byte_count=ARRAY * 4),
+        enc(OP_LOAD_ACT, ddr3_addr=A0_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_STORE, ddr3_addr=OUT0_ADDR, byte_count=ARRAY * ARRAY),
+
+        # Held: reuse bank 1's already-loaded W1/B1, no LOAD_W/LOAD_B.
+        enc(OP_LOAD_ACT, ddr3_addr=A1_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_STORE, ddr3_addr=OUT1_ADDR, byte_count=ARRAY * ARRAY),
+
+        # Held again, proving it's not just a one-shot bypass.
+        enc(OP_LOAD_ACT, ddr3_addr=A2_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_STORE, ddr3_addr=OUT2_ADDR, byte_count=ARRAY * ARRAY),
+
+        # Drop the hold: fresh load into the never-touched bank 0, proving it
+        # still accepts a real load correctly after sitting untouched through
+        # the whole held sequence.
+        enc(OP_LOAD_W, ddr3_addr=W2_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4),
+        enc(OP_LOAD_ACT, ddr3_addr=A3_ADDR, byte_count=ARRAY * ARRAY),
+        enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_STORE, ddr3_addr=OUT3_ADDR, byte_count=ARRAY * ARRAY),
+    ]
+
+    await _load_imem(dut, instrs)
+
+    await reg_write(dut, REG_INSTR_ADDR, 0)
+    await reg_write(dut, REG_INSTR_LEN, len(instrs))
+    await reg_write(dut, REG_CTRL, 0x1)
+
+    for i in range(20000):
+        status = await reg_read(dut, REG_STATUS)
+        if bool(status & 0x4):
+            break
+        if bool(status & 0x8):
+            assert False, f"npu_error asserted (STATUS=0x{status:08X})"
+        await ClockCycles(dut.clk, 10)
+    else:
+        _dump_state(dut)
+        assert False, f"timeout waiting for done (STATUS=0x{status:08X})"
+
+    expected = [
+        (OUT0_ADDR, ref_matmul(A0, W1)),
+        (OUT1_ADDR, ref_matmul(A1, W1)),
+        (OUT2_ADDR, ref_matmul(A2, W1)),
+        (OUT3_ADDR, ref_matmul(A3, W2)),
+    ]
+
+    fails = 0
+    for addr, O in expected:
+        exp = [O[m][n] for m in range(ARRAY) for n in range(ARRAY)]
+        got = ram.read_bytes(addr, len(exp))
+        gs = [b - 256 if b >= 128 else b for b in got]
+        for idx, (g, e) in enumerate(zip(gs, exp)):
+            if g != e:
+                fails += 1
+                row, col = idx // ARRAY, idx % ARRAY
+                cocotb.log.info(
+                    f"  MISMATCH addr=0x{addr:x} idx={idx} (r{row},c{col}) got={g} want={e}"
+                )
+    assert fails == 0, f"weight-hold M-streaming failed with {fails} mismatches"
+    cocotb.log.info("weight-hold M-streaming PASS")
+
+
+@cocotb.test()
+async def test_matmul_weight_hold_with_k_tiling(dut):
+    """MATMUL target[0] (weight_hold) combined with K-tiling: several
+    M-chunks' partial sums held resident in out_buffer at once (via MATMUL's
+    ddr3_addr[7:0] row-base and ACTIVATE's byte_count[12:5]/[13] row-base +
+    bank-hold), so weight is reloaded once per K-tile instead of once per
+    (K-tile, M-chunk) pair.
+
+    Sequence, K=28 (2 K-tiles), M=42 (3 M-chunks of 14 rows), N=14:
+      K-tile 0: real load_weight/load_bias, then 3 chunks - chunk 0 unheld
+        (real load just happened), chunks 1-2 held (target[0]=1), each at
+        its own mat_row_base (0, 14, 28), acc_mode=0 (seeds from bias).
+      K-tile 1: real load_weight (fresh K-tile, not held), then the same
+        3-chunk pattern again, acc_mode=1 (accumulates the row-base'd
+        partial sum from K-tile 0).
+      Drain: 3 ACTIVATEs, one per chunk, each at its own act_row_base;
+        bank_hold=1 on the first two (more chunks still draining the same
+        bank), bank_hold=0 on the last (toggles, same as an ordinary
+        activate) - then 3 STOREs.
+      Finally, one ordinary (unheld, un-row-based) matmul proves the system
+      is still healthy afterward - dep_tracker's bank bookkeeping and
+      out_bank_sel's toggle weren't left in a bad state by the held batch.
+    """
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await _reset(dut)
+
+    ram = AxiRam(dut)
+    cocotb.start_soon(ram.run())
+    cocotb.start_soon(_monitor(dut))
+
+    K = 28
+    N = ARRAY
+    CHUNK = ARRAY  # 14-row M-chunks, one per hold-batch slot
+    M_CHUNKS = 3
+    M = CHUNK * M_CHUNKS  # 42
+
+    W1 = [[((k + n) % 3) - 1 for n in range(N)] for k in range(K)]
+    A = [[((m + k) % 3) - 1 for k in range(K)] for m in range(M)]
+    O = ref_matmul(A, W1)
+
+    # Sanity matmul afterward: deliberately different weight so a
+    # stale-bank-reuse bug can't accidentally compute the right answer.
+    W2 = [[((2 * k + n + 1) % 3) - 1 for n in range(N)] for k in range(ARRAY)]
+    A_sanity = [[((m + k + 5) % 3) - 1 for k in range(ARRAY)] for m in range(ARRAY)]
+    O_sanity = ref_matmul(A_sanity, W2)
+
+    def weight_bytes(Wmat, k0):
+        return [s8(Wmat[k0 + k][n]) for k in range(ARRAY) for n in range(ARRAY)]
+
+    def act_bytes(Amat, m0, k0):
+        return [s8(Amat[m0 + m][k0 + k]) for m in range(ARRAY) for k in range(ARRAY)]
+
+    W0_ADDR, W1T_ADDR, B_ADDR = 0x1000, 0x1200, 0x6000
+    A_ADDR = {(m, k): 0x8000 + 0x200 * (m * 2 + k) for m in range(M_CHUNKS) for k in range(2)}
+    OUT_ADDR = {m: 0x10000 + 0x200 * m for m in range(M_CHUNKS)}
+    W2_ADDR, B2_ADDR, A_SANITY_ADDR, OUT_SANITY_ADDR = 0x1400, 0x6100, 0x8c00, 0x10600
+
+    for addr, data in [
+        (W0_ADDR, weight_bytes(W1, 0)),
+        (W1T_ADDR, weight_bytes(W1, ARRAY)),
+        (B_ADDR, flatten_i32([0] * ARRAY)),
+        (W2_ADDR, weight_bytes(W2, 0)),
+        (B2_ADDR, flatten_i32([0] * ARRAY)),
+        (A_SANITY_ADDR, act_bytes(A_sanity, 0, 0)),
+    ] + [(A_ADDR[(m, k)], act_bytes(A, m * CHUNK, k * ARRAY))
+        for m in range(M_CHUNKS) for k in range(2)]:
+        ram.write_bytes(addr, data)
+
+    def mat_row_base_addr(base):
+        # MATMUL's row base lives in ddr3_addr[7:0] - enc() takes the raw
+        # ddr3_addr value directly.
+        return base
+
+    def act_byte_count(shift, row_base, bank_hold):
+        return (shift & 0x1F) | ((row_base & 0xFF) << 5) | ((bank_hold & 1) << 13)
+
+    instrs = []
+    for k in range(2):
+        instrs.append(enc(OP_LOAD_W, ddr3_addr=(W0_ADDR if k == 0 else W1T_ADDR),
+                          byte_count=ARRAY * ARRAY))
+        if k == 0:
+            instrs.append(enc(OP_LOAD_B, ddr3_addr=B_ADDR, byte_count=ARRAY * 4))
+        for m in range(M_CHUNKS):
+            held = m > 0
+            instrs.append(enc(OP_LOAD_ACT, ddr3_addr=A_ADDR[(m, k)], byte_count=ARRAY * ARRAY))
+            instrs.append(enc(OP_MATMUL, acc_mode=(0 if k == 0 else 1),
+                              target=(1 if held else 0),
+                              ddr3_addr=mat_row_base_addr(m * CHUNK),
+                              tile_params=ARRAY))
+
+    for m in range(M_CHUNKS):
+        last = m == M_CHUNKS - 1
+        # ddr3_addr=1: ACTIVATE's ddr3_addr field is act_scale_m (passthrough
+        # multiplier) - leaving it 0 multiplies every result by zero.
+        instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1,
+                          byte_count=act_byte_count(0, m * CHUNK, bank_hold=0 if last else 1),
+                          tile_params=ARRAY))
+        instrs.append(enc(OP_STORE, ddr3_addr=OUT_ADDR[m], byte_count=ARRAY * ARRAY))
+
+    # Sanity matmul: ordinary, unheld, row_base=0 - proves the system is
+    # still healthy after the held batch (weight/bias/act banks and
+    # out_bank_sel weren't left in a bad state).
+    instrs.append(enc(OP_LOAD_W, ddr3_addr=W2_ADDR, byte_count=ARRAY * ARRAY))
+    instrs.append(enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4))
+    instrs.append(enc(OP_LOAD_ACT, ddr3_addr=A_SANITY_ADDR, byte_count=ARRAY * ARRAY))
+    instrs.append(enc(OP_MATMUL, acc_mode=0, target=0, ddr3_addr=0, tile_params=ARRAY))
+    instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1,
+                      byte_count=act_byte_count(0, 0, bank_hold=0), tile_params=ARRAY))
+    instrs.append(enc(OP_STORE, ddr3_addr=OUT_SANITY_ADDR, byte_count=ARRAY * ARRAY))
+
+    await _load_imem(dut, instrs)
+
+    await reg_write(dut, REG_INSTR_ADDR, 0)
+    await reg_write(dut, REG_INSTR_LEN, len(instrs))
+    await reg_write(dut, REG_CTRL, 0x1)
+
+    for i in range(20000):
+        status = await reg_read(dut, REG_STATUS)
+        if bool(status & 0x4):
+            break
+        if bool(status & 0x8):
+            assert False, f"npu_error asserted (STATUS=0x{status:08X})"
+        await ClockCycles(dut.clk, 10)
+    else:
+        _dump_state(dut)
+        assert False, f"timeout waiting for done (STATUS=0x{status:08X})"
+
+    fails = 0
+    for m in range(M_CHUNKS):
+        exp = [O[m * CHUNK + mm][n] for mm in range(ARRAY) for n in range(ARRAY)]
+        got = ram.read_bytes(OUT_ADDR[m], len(exp))
+        gs = [b - 256 if b >= 128 else b for b in got]
+        for idx, (g, e) in enumerate(zip(gs, exp)):
+            if g != e:
+                fails += 1
+                row, col = idx // ARRAY, idx % ARRAY
+                cocotb.log.info(
+                    f"  MISMATCH chunk{m} idx={idx} (r{row},c{col}) got={g} want={e}"
+                )
+
+    exp_sanity = [O_sanity[m][n] for m in range(ARRAY) for n in range(ARRAY)]
+    got_sanity = ram.read_bytes(OUT_SANITY_ADDR, len(exp_sanity))
+    gs_sanity = [b - 256 if b >= 128 else b for b in got_sanity]
+    for idx, (g, e) in enumerate(zip(gs_sanity, exp_sanity)):
+        if g != e:
+            fails += 1
+            row, col = idx // ARRAY, idx % ARRAY
+            cocotb.log.info(f"  MISMATCH sanity idx={idx} (r{row},c{col}) got={g} want={e}")
+
+    assert fails == 0, f"weight-hold+K-tiling failed with {fails} mismatches"
+    cocotb.log.info("weight-hold+K-tiling PASS")

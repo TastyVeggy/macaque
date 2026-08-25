@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "macaque/Dialect/MacaqueOps.h"
+#include "macaque/Dialect/MacaqueOps.hpp"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"

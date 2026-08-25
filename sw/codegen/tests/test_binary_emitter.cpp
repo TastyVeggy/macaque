@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "macaque/Dialect/MacaqueOps.h"
-#include "macaque/Target/BinaryEmitter.h"
+#include "macaque/Dialect/MacaqueOps.hpp"
+#include "macaque/Target/BinaryEmitter.hpp"
 #include "macaque/common/isa.hpp"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
@@ -38,7 +38,7 @@ TEST_F(BinaryEmitterTest, LoadWeightMatchesHandBuiltInstruction) {
   ASSERT_EQ(words->size(), 1u);
 
   isa::Instruction expected{isa::Opcode::LoadWeight, false, 0, 0x123'4567u,
-                             200, 0};
+                             200, 0, 0};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
@@ -50,7 +50,7 @@ TEST_F(BinaryEmitterTest, MatmulMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Matmul, true, 0, 0, 0, 14};
+  isa::Instruction expected{isa::Opcode::Matmul, true, 0, 0, 0, 0, 14};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
@@ -64,7 +64,7 @@ TEST_F(BinaryEmitterTest, ActivateMatchesHandBuiltInstruction) {
   ASSERT_EQ(words->size(), 1u);
 
   isa::Instruction expected{isa::Opcode::Activate, false, 1, 0xABCDEFu, 9,
-                             64};
+                             0, 64};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
@@ -75,7 +75,7 @@ TEST_F(BinaryEmitterTest, SyncMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Sync, false, 0, 0, 0, 0};
+  isa::Instruction expected{isa::Opcode::Sync, false, 0, 0, 0, 0, 0};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 

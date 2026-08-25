@@ -15,6 +15,11 @@ module activate_unit (
     input logic               [ 4:0] scale_shift,  // right shift, 0..31
     input npu_pkg::act_func_t        act_func,     // activation-function selector
 
+    // out_buffer row this M-chunk's accumulator starts at (0 for every
+    // matmul pattern except weight-hold combined with K-tiling, which keeps
+    // several chunks resident in out_buffer at once).
+    input npu_pkg::bram_addr_t row_base,
+
     // Out buffer read (INT32 accumulator input)
     output logic                ob_re,
     output npu_pkg::bram_addr_t ob_raddr,
@@ -115,7 +120,7 @@ module activate_unit (
         for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) qb_wdata[i] <= qb_wdata_next[i];
       end
 
-      if (state == ACT_PIPELINE && act_count < num_rows) ob_raddr <= act_count + 1'b1;
+      if (state == ACT_PIPELINE && act_count < num_rows) ob_raddr <= row_base + act_count + 1'b1;
 
       done <= '0;
       case (state)
@@ -124,7 +129,7 @@ module activate_unit (
           if (req) begin
             act_count <= '0;
             ob_re     <= 1'b1;
-            ob_raddr  <= '0;
+            ob_raddr  <= row_base;
             state     <= ACT_PIPELINE;
           end
         end

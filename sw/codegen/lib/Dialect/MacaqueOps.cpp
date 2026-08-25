@@ -1,4 +1,4 @@
-#include "macaque/Dialect/MacaqueOps.h"
+#include "macaque/Dialect/MacaqueOps.hpp"
 
 #define GET_OP_CLASSES
 #include "macaque/Dialect/MacaqueOps.cpp.inc"
@@ -28,9 +28,14 @@ LogicalResult LoadInputOp::verify() {
 }
 
 LogicalResult MatmulOp::verify() {
-  if (getTileParams() >= (1u << 12))
-    return emitOpError("tile_params must fit in 12 bits [11:0], got ")
+  if (getTileParams() >= (1u << 8))
+    return emitOpError("tile_params (row count) must fit in 8 bits [7:0], got ")
            << getTileParams();
+  if (getMatRowBase() + getTileParams() > 256)
+    return emitOpError(
+               "mat_row_base + tile_params must fit the 256-row out_buffer, "
+               "got mat_row_base=")
+           << getMatRowBase() << " tile_params=" << getTileParams();
   return success();
 }
 
@@ -46,6 +51,12 @@ LogicalResult ActivateOp::verify() {
   if (getActScaleShift() >= 32)
     return emitOpError("act_scale_shift must fit in 5 bits [0, 32), got ")
            << static_cast<unsigned>(getActScaleShift());
+  if (getActRowBase() + getActNumRows() > 256)
+    return emitOpError(
+               "act_row_base + act_num_rows must fit the 256-row "
+               "out_buffer, got act_row_base=")
+           << static_cast<unsigned>(getActRowBase())
+           << " act_num_rows=" << static_cast<unsigned>(getActNumRows());
   return success();
 }
 
