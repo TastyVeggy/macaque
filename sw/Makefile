@@ -1,5 +1,5 @@
 .PHONY: build test run_test clean distclean \
-        common codegen simulator \
+        common codegen simulator\
         test-common test-codegen test-simulator
 BUILD_DIR := build/debug
 PRESET ?= debug
@@ -21,7 +21,7 @@ common: configure
 	cmake --build --preset $(PRESET) --target test_instruction
 
 codegen: configure
-	cmake --build --preset $(PRESET) --target macaque_codegen --target test_codegen
+	cmake --build --preset $(PRESET) --target macaque_codegen --target test_codegen --target macaque-lower
 
 simulator: configure
 	cmake --build --preset $(PRESET) --target macaque_simulator --target test_simulator
