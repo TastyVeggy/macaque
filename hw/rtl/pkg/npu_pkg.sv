@@ -132,13 +132,13 @@ package npu_pkg;
   // Leaky-ReLU negative slope: alpha = 2^-LEAKY_RELU_SHIFT
   parameter int LEAKY_RELU_SHIFT = 4;
 
-  // Named view of an ACTIVATE instruction. 
+  // Named view of an ACTIVATE instruction.
   typedef struct packed {
     opcode_t     opcode;           // [63:60]
     logic        acc_mode;         // [59] (unused by ACTIVATE)
     act_func_t   act_func;         // [58:56] (target)
-    logic [27:0] act_scale_m;      // [55:28] (ddr3_addr)
-    logic [1:0]  reserved2;        // [27:26] (byte_count[15:14])
+    logic [16:0] act_scale_m;      // [55:39] (ddr3_addr[27:11])
+    logic [12:0] act_reserved;     // [38:26] (ddr3_addr[10:0], byte_count[15:14]) - spare, TODO: leaky relu shift
     logic        act_bank_hold;    // [25]    (byte_count[13])
     logic [7:0]  act_row_base;     // [24:17] (byte_count[12:5])
     logic [4:0]  act_scale_shift;  // [16:12] (byte_count[4:0])
@@ -151,8 +151,8 @@ package npu_pkg;
     a.opcode          = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
     a.acc_mode        = raw[ISA_ACC_MODE_B];
     a.act_func        = act_func_t'(raw[ISA_TARGET_H:ISA_TARGET_L]);
-    a.act_scale_m     = raw[ISA_DDR_ADDR_H:ISA_DDR_ADDR_L];
-    a.reserved2       = raw[ISA_BYTE_CNT_H-:2];
+    a.act_scale_m     = raw[ISA_DDR_ADDR_H-:17];     // [55:39]
+    a.act_reserved    = raw[ISA_DDR_ADDR_H-17-:13];  // [38:26]
     a.act_bank_hold   = raw[ISA_BYTE_CNT_H-2];
     a.act_row_base    = raw[ISA_BYTE_CNT_H-3-:8];
     a.act_scale_shift = raw[ISA_BYTE_CNT_L+:5];

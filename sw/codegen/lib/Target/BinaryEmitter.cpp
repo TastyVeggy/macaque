@@ -46,8 +46,9 @@ FailureOr<isa::Instruction> toInstruction(Operation& op) {
             static_cast<uint16_t>(o.getActScaleShift() & 0x1F) |
             static_cast<uint16_t>((o.getActRowBase() & 0xFF) << 5) |
             static_cast<uint16_t>((o.getActBankHold() ? 1 : 0) << 13);
+        const uint32_t ddr3Addr = (o.getActScaleM() & 0x1FFFFu) << 11;
         return isa::Instruction{isa::Opcode::Activate, /*acc_mode=*/false,
-                                o.getActFunc(),        o.getActScaleM(),
+                                o.getActFunc(),        ddr3Addr,
                                 byteCount,             /*reserved=*/0,
                                 o.getActNumRows()};
       })

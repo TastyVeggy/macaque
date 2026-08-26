@@ -45,8 +45,10 @@ LogicalResult ActivateOp::verify() {
                "act_func must be 0 (ReLU), 1 (leaky-ReLU), or 2 "
                "(passthrough), got ")
            << static_cast<unsigned>(getActFunc());
-  if (getActScaleM() >= (1u << 28))
-    return emitOpError("act_scale_m must fit in 28 bits, got ")
+  if (getActScaleM() >= (1u << 17))
+    return emitOpError(
+               "act_scale_m must fit in 17 bits as it only occupies the top 17 of "
+               "ddr3_addr's 28 bits")
            << getActScaleM();
   if (getActScaleShift() >= 32)
     return emitOpError("act_scale_shift must fit in 5 bits [0, 32), got ")

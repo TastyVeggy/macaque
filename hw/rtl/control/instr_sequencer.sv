@@ -28,7 +28,7 @@ module instr_sequencer (
     input  logic activate_done,
 
     // ACTIVATE requantize parameters
-    output logic               [27:0] act_scale_m,
+    output logic               [16:0] act_scale_m,
     output logic               [ 4:0] act_scale_shift,
     output npu_pkg::act_func_t        act_func,
 

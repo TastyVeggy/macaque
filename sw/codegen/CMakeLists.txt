@@ -19,6 +19,7 @@ add_mlir_dialect_library(macaque_codegen
     lib/Dialect/MacaqueDialect.cpp
     lib/Dialect/MacaqueOps.cpp
     lib/Target/BinaryEmitter.cpp
+    lib/Target/DataEmitter.cpp
     lib/Conversion/DdrLayout.cpp
     lib/Conversion/TosaToMacaque.cpp
 

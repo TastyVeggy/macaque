@@ -67,7 +67,10 @@ struct Instruction {
 };
 
 // ACTIVATE field reinterpretation
-//   ddr3_addr[55:28]  -> scale_m        (28-bit unsigned fixed-point M)
+//   ddr3_addr[27:11]  -> scale_m        (17-bit unsigned fixed-point M)
+//   ddr3_addr[10:0] +
+//   byte_count[15:14] -> reserved - spare for a future per-instruction
+//                        leaky-ReLU shift
 //   byte_count[4:0]   -> scale_shift    (0..31)
 //   byte_count[12:5]  -> row_base       (out_buffer row this M-chunk's
 //                       accumulator starts at; see MATMUL's mat_row_base
@@ -75,12 +78,11 @@ struct Instruction {
 //   byte_count[13]    -> bank_hold      (skip the out_bank_sel toggle - more
 //                       chunks from this same held-batch bank still need
 //                       draining before the next matmul round may reuse it)
-//   byte_count[15:14] -> reserved
 //   target[58:56]     -> act_func
 //   tile_params       -> num_rows       (M dimension; `reserved` is spare,
 //                       not part of this - see the field layout note up top)
 [[nodiscard]] inline constexpr uint32_t scale_m(const Instruction& i) noexcept {
-  return i.ddr3_addr;
+  return (i.ddr3_addr >> 11) & 0x1FFFF;
 }
 [[nodiscard]] inline constexpr uint32_t scale_shift(
     const Instruction& i) noexcept {

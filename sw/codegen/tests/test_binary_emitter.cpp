@@ -56,15 +56,15 @@ TEST_F(BinaryEmitterTest, MatmulMatchesHandBuiltInstruction) {
 
 TEST_F(BinaryEmitterTest, ActivateMatchesHandBuiltInstruction) {
   ActivateOp::create(*builder, loc, TypeRange{}, /*act_func=*/1,
-                      /*act_scale_m=*/0xABCDEFu, /*act_scale_shift=*/9,
+                      /*act_scale_m=*/0x1ABCDu, /*act_scale_shift=*/9,
                       /*act_num_rows=*/64);
 
   auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Activate, false, 1, 0xABCDEFu, 9,
-                             0, 64};
+  isa::Instruction expected{isa::Opcode::Activate, false, 1,
+                             0x1ABCDu << 11, 9, 0, 64};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 

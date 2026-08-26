@@ -909,6 +909,147 @@ TEST(ClosedLoop, PartialKTileZeroPadsCorrectly) {
 }
 
 //===----------------------------------------------------------------------===//
+// 4b. Partial N-tile, whole-pipeline closed loop, driven by the compiler's
+// own DataSegment output instead of hand-constructed bytes.
+//
+// Test does not hand write the zero-padded bytes, but check if
+// staged into DDR3 as part of the DataSegment output
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+constexpr int kPartialNRows = 2;
+constexpr int64_t kPartialN = 20;
+
+int8_t partialNAct(int r, int k) { return static_cast<int8_t>((r * 7 + k) % 9 - 4); }
+int8_t partialNWeight(int k, int c) { return static_cast<int8_t>((k + 2 * c) % 5 - 2); }
+int32_t partialNBias(int c) { return c - 5; }
+constexpr uint32_t kPartialNMult = 2, kPartialNShift = 1;
+
+uint8_t partialNExpected(int r, int c) {  // c ranges over the true N=20
+  int64_t acc = partialNBias(c);
+  for (int k = 0; k < 14; ++k)
+    acc += static_cast<int64_t>(partialNAct(r, k)) * static_cast<int64_t>(partialNWeight(k, c));
+  int64_t scaled = acc * static_cast<int64_t>(kPartialNMult);
+  scaled += static_cast<int64_t>(1) << (kPartialNShift - 1);  // round-half-up
+  int64_t requant = scaled >> kPartialNShift;
+  return static_cast<uint8_t>(std::clamp<int64_t>(requant, -128, 127));
+}
+
+}  // namespace
+
+TEST(ClosedLoop, PartialNTileZeroPadsCorrectly) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  auto aTy = RankedTensorType::get({1, kPartialNRows, 14}, i8Ty);
+  auto bTy = RankedTensorType::get({1, 14, kPartialN}, i8Ty);
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto biasTy = RankedTensorType::get({1, 1, kPartialN}, i32Ty);
+
+  std::vector<int8_t> aData;
+  for (int r = 0; r < kPartialNRows; ++r)
+    for (int k = 0; k < 14; ++k) aData.push_back(partialNAct(r, k));
+  auto a = tosa::ConstOp::create(builder, loc, aTy,
+                                 DenseElementsAttr::get(aTy, ArrayRef<int8_t>(aData)));
+
+  std::vector<int8_t> bData;
+  for (int k = 0; k < 14; ++k)
+    for (int64_t c = 0; c < kPartialN; ++c) bData.push_back(partialNWeight(k, static_cast<int>(c)));
+  auto b = tosa::ConstOp::create(builder, loc, bTy,
+                                 DenseElementsAttr::get(bTy, ArrayRef<int8_t>(bData)));
+
+  auto aZp = tosa::ConstOp::create(builder, loc, zpTy,
+                                   DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(builder, loc, zpTy,
+                                   DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto matmulOutTy = RankedTensorType::get({1, kPartialNRows, kPartialN}, i32Ty);
+  auto matmul = tosa::MatMulOp::create(builder, loc, matmulOutTy, a.getResult(), b.getResult(),
+                                       aZp.getResult(), bZp.getResult());
+
+  std::vector<int32_t> biasData;
+  for (int64_t c = 0; c < kPartialN; ++c) biasData.push_back(partialNBias(static_cast<int>(c)));
+  auto bias = tosa::ConstOp::create(builder, loc, biasTy,
+                                    DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+  auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(), bias.getResult());
+
+  auto multiplierConst = tosa::ConstOp::create(
+      builder, loc, RankedTensorType::get({1}, i32Ty),
+      DenseElementsAttr::get(RankedTensorType::get({1}, i32Ty),
+                             static_cast<int32_t>(kPartialNMult)));
+  auto shiftConst = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(kPartialNShift)));
+  auto rescaleOutTy = RankedTensorType::get({1, kPartialNRows, kPartialN}, i8Ty);
+  tosa::RescaleOp::create(builder, loc, rescaleOutTy, add.getResult(), multiplierConst.getResult(),
+                          shiftConst.getResult(), aZp.getResult(), aZp.getResult(),
+                          /*scale32=*/true, tosa::RoundingMode::SINGLE_ROUND,
+                          /*perChannel=*/false, /*inputUnsigned=*/false,
+                          /*outputUnsigned=*/false);
+
+  conversion::CompiledProgramInfo info;
+  ASSERT_TRUE(succeeded(conversion::lowerTosaToMacaque(block, &info)));
+
+  SmallVector<LoadWeightOp> loadWeights;
+  SmallVector<LoadBiasOp> loadBiases;
+  SmallVector<LoadInputOp> loadInputs;
+  SmallVector<StoreOp> stores;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadWeightOp>(op)) loadWeights.push_back(o);
+    if (auto o = dyn_cast<LoadBiasOp>(op)) loadBiases.push_back(o);
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInputs.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op)) stores.push_back(o);
+  }
+  ASSERT_EQ(loadWeights.size(), 2u);  // ceil(20/14) = 2 N-tiles
+  ASSERT_EQ(loadBiases.size(), 2u);
+  ASSERT_EQ(loadInputs.size(), 2u);   // reloaded once per N-tile
+  ASSERT_EQ(stores.size(), 2u);
+
+  auto words = target::emitBinary(block);
+  ASSERT_TRUE(succeeded(words));
+
+  sim::Simulator simulator(/*ddr_bytes=*/8192);
+
+  // No hand-constructed bytes here - every weight/bias/activation address is
+  // staged straight from the compiler's own DataSegment output.
+  for (const auto& [addr, bytes] : info.data)
+    simulator.write(addr, bytes.data(), bytes.size());
+
+  simulator.run(*words);
+
+  // N-tile 0: channels 0-13, fully real.
+  std::vector<uint8_t> result0 =
+      simulator.read(stores[0].getDdr3Addr(), kPartialNRows * 14);
+  ASSERT_EQ(result0.size(), static_cast<size_t>(kPartialNRows * 14));
+  for (int r = 0; r < kPartialNRows; ++r)
+    for (int c = 0; c < 14; ++c)
+      EXPECT_EQ(result0[r * 14 + c], partialNExpected(r, c)) << "row " << r << " channel " << c;
+
+  // N-tile 1 (the boundary tile): local channels 0-5 (global 14-19) are
+  // real; the compiler pads the rest of this N-tile's weight/bias with
+  // zeros, but the *output* itself is never padded - the store here is
+  // still only 14 columns wide per the instruction shape (ACTIVATE/STORE
+  // don't know the true N=20 bound), so only the real local channels are
+  // checked against a reference.
+  std::vector<uint8_t> result1 =
+      simulator.read(stores[1].getDdr3Addr(), kPartialNRows * 14);
+  ASSERT_EQ(result1.size(), static_cast<size_t>(kPartialNRows * 14));
+  for (int r = 0; r < kPartialNRows; ++r) {
+    for (int localC = 0; localC < 6; ++localC) {
+      const int c = 14 + localC;
+      EXPECT_EQ(result1[r * 14 + localC], partialNExpected(r, c))
+          << "row " << r << " channel " << c;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // 5. N-tiling, whole-pipeline closed loop
 //
 // N=28 - two fully independent 14-wide output-channel tiles - checked

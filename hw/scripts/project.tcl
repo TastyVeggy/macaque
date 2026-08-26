@@ -15,6 +15,5 @@ foreach ip $TOP_IPS($top_module) {
 
 set_property top $top_module [current_fileset]
 update_compile_order -fileset sources_1
-update_compile_order -fileset constrs_1
 
 puts "PROJECT: created $proj_file (top=$top_module)"

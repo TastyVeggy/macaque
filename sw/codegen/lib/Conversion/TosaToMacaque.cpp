@@ -33,6 +33,40 @@ uint32_t activationTileBytes(RankedTensorType aType, int64_t rows) {
          (aType.getElementTypeBitWidth() / 8);
 }
 
+// Materializes every element of a rank-3 [1, dim0, dim1] integer
+// tosa.const into a flat, row-major value grid, for `extractTileBytes`
+// to index into
+SmallVector<int64_t> flattenConstValues(tosa::ConstOp constOp) {
+  auto elements = cast<DenseElementsAttr>(constOp.getValues());
+  SmallVector<int64_t> values;
+  values.reserve(elements.getNumElements());
+  for (const APInt& v : elements.getValues<APInt>())
+    values.push_back(v.getSExtValue());
+  return values;
+}
+
+// Extracts one (rowTileSize x colTileSize) tile 
+// from a flat, row-major (fullRows x fullCols) value grid, as raw
+// little-endian bytes. It also handles the zero-padding
+SmallVector<uint8_t> extractTileBytes(ArrayRef<int64_t> values, int64_t fullRows,
+                                      int64_t fullCols, int64_t rowBase,
+                                      int64_t colBase, int64_t rowTileSize,
+                                      int64_t colTileSize, int64_t elemBytes) {
+  SmallVector<uint8_t> bytes;
+  bytes.reserve(static_cast<size_t>(rowTileSize * colTileSize * elemBytes));
+  for (int64_t r = 0; r < rowTileSize; r++) {
+    for (int64_t c = 0; c < colTileSize; c++) {
+      const int64_t row = rowBase + r, col = colBase + c;
+      const uint64_t v = (row < fullRows && col < fullCols)
+                             ? static_cast<uint64_t>(values[row * fullCols + col])
+                             : 0;
+      for (int64_t b = 0; b < elemBytes; b++)
+        bytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
+    }
+  }
+  return bytes;
+}
+
 struct MatmulOperands {
   Value a;
   tosa::ConstOp bConst;
@@ -48,11 +82,12 @@ FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
                                               PatternRewriter& rewriter) {
   Value a = matmul.getA();
   if (!a.getDefiningOp<tosa::ConstOp>() && !isa<BlockArgument>(a) &&
-      !a.getDefiningOp<tosa::RescaleOp>())
+      !a.getDefiningOp<tosa::RescaleOp>() && !a.getDefiningOp<tosa::ClampOp>())
     return rewriter.notifyMatchFailure(
         matmul,
-        "activation input must be a tosa.const, a block argument, or a "
-        "prior tosa.rescale's result");
+        "activation input must be a tosa.const, a block argument, a prior "
+        "tosa.rescale's result, or a fused-ReLU tosa.clamp's result (see "
+        "matchReluClamp)");
 
   auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
   if (!bConst)
@@ -105,15 +140,35 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
     return addrs;
   }
 
+  // aConst is pretty much just for testing. Activation input
+  // should almost always be supplied by the runtime or result from a previous layer
+  auto aConst = operands.a.getDefiningOp<tosa::ConstOp>();
+  const SmallVector<int64_t> actValues =
+      aConst ? flattenConstValues(aConst) : SmallVector<int64_t>{};
+  const int64_t fullK = operands.aType.getShape()[2];
+  const int64_t actElemBytes = operands.aType.getElementTypeBitWidth() / 8;
+
   SmallVector<SmallVector<uint32_t>> addrs;
   addrs.reserve(operands.numFlatChunks);
   for (int64_t m = 0; m < operands.numFlatChunks; ++m) {
-    const uint32_t tileBytes =
-        activationTileBytes(operands.aType, flatChunkRows(operands.rows, m));
+    const int64_t chunkRows = flatChunkRows(operands.rows, m);
+    const uint32_t tileBytes = activationTileBytes(operands.aType, chunkRows);
     SmallVector<uint32_t> kAddrs;
     kAddrs.reserve(operands.numKTiles);
-    for (int64_t k = 0; k < operands.numKTiles; k++)
-      kAddrs.push_back(layout.allocateInput(tileBytes));
+    for (int64_t k = 0; k < operands.numKTiles; k++) {
+      const uint32_t addr = layout.allocateInput(tileBytes);
+      if (aConst) {
+        layout.recordData(
+            addr, extractTileBytes(actValues, operands.rows, fullK,
+                                   /*rowBase=*/m * kMaxFlatChunkRows,
+                                   /*colBase=*/k * kTileWidth, chunkRows,
+                                   kTileWidth, actElemBytes));
+      } else {
+        layout.recordInputTile(addr, tileBytes);
+        layout.setInputValidBytes(fullK * actElemBytes);
+      }
+      kAddrs.push_back(addr);
+    }
     addrs.push_back(std::move(kAddrs));
   }
   return addrs;
@@ -121,14 +176,25 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
 
 // Emits the first M-chunk's load_weight+load_input+matmul for a single
 // N-tile which is the only chunk in the group that actually loads weight.
-void emitFlatFreshChunkMatmul(const MatmulOperands& operands, int64_t chunkRows,
-                              uint32_t inputAddr, DdrLayout& layout,
-                              Location loc,
+void emitFlatFreshChunkMatmul(const MatmulOperands& operands, int64_t nTile,
+                              int64_t chunkRows, uint32_t inputAddr,
+                              DdrLayout& layout, Location loc,
                               ConversionPatternRewriter& rewriter) {
   const uint32_t weightBytes = weightTileBytes(operands.bType);
   const uint32_t weightAddr = layout.allocateWeight(weightBytes);
   LoadWeightOp::create(rewriter, loc, TypeRange{}, weightAddr,
                        static_cast<uint16_t>(weightBytes));
+
+  // numKTiles == 1 here so there's a single K-tile spanning
+  // all of K, padded to 14 rows.
+  const SmallVector<int64_t> weightValues = flattenConstValues(operands.bConst);
+  const int64_t fullK = operands.bType.getShape()[1];
+  const int64_t fullN = operands.bType.getShape()[2];
+  const int64_t weightElemBytes = operands.bType.getElementTypeBitWidth() / 8;
+  layout.recordData(weightAddr,
+                    extractTileBytes(weightValues, fullK, fullN, /*rowBase=*/0,
+                                     /*colBase=*/nTile * kTileWidth, kTileWidth,
+                                     kTileWidth, weightElemBytes));
 
   const uint32_t inputBytes = activationTileBytes(operands.aType, chunkRows);
   LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
@@ -149,9 +215,21 @@ void emitFlatHeldChunkMatmul(const MatmulOperands& operands, int64_t chunkRows,
                    static_cast<uint16_t>(chunkRows), /*weight_hold=*/true);
 }
 
-uint32_t allocateBiasAddr(tosa::ConstOp biasConst, DdrLayout& layout) {
-  return biasConst ? layout.allocateBias(kBiasTileBytes)
-                   : layout.zeroBiasAddr();
+uint32_t allocateBiasAddr(tosa::ConstOp biasConst, int64_t nTile,
+                          DdrLayout& layout) {
+  if (!biasConst) {
+    const uint32_t addr = layout.zeroBiasAddr();
+    layout.recordData(addr, SmallVector<uint8_t>(kBiasTileBytes, 0));
+    return addr;
+  }
+  const uint32_t addr = layout.allocateBias(kBiasTileBytes);
+  const SmallVector<int64_t> biasValues = flattenConstValues(biasConst);
+  const int64_t fullN = cast<RankedTensorType>(biasConst.getType()).getShape()[2];
+  layout.recordData(
+      addr, extractTileBytes(biasValues, /*fullRows=*/1, fullN, /*rowBase=*/0,
+                             /*colBase=*/nTile * kTileWidth, /*rowTileSize=*/1,
+                             kTileWidth, /*elemBytes=*/sizeof(int32_t)));
+  return addr;
 }
 
 void emitBiasLoad(uint32_t addr, Location loc,
@@ -160,9 +238,9 @@ void emitBiasLoad(uint32_t addr, Location loc,
                      static_cast<uint16_t>(kBiasTileBytes));
 }
 
-void emitBias(tosa::ConstOp biasConst, DdrLayout& layout, Location loc,
-              ConversionPatternRewriter& rewriter) {
-  emitBiasLoad(allocateBiasAddr(biasConst, layout), loc, rewriter);
+void emitBias(tosa::ConstOp biasConst, int64_t nTile, DdrLayout& layout,
+              Location loc, ConversionPatternRewriter& rewriter) {
+  emitBiasLoad(allocateBiasAddr(biasConst, nTile, layout), loc, rewriter);
 }
 
 // Held-batch activation addresses for weight-hold combined with K-tiling:
@@ -180,6 +258,13 @@ SmallVector<SmallVector<uint32_t>> allocateBatchChunkInputAddrs(
   auto chained = intermediateAddr.find(operands.a);
   const int64_t elemBytes = operands.aType.getElementTypeBitWidth() / 8;
 
+  // aConst is pretty much just for testing. Activation input
+  // should almost always be supplied by the runtime or result from a previous layer
+  auto aConst = operands.a.getDefiningOp<tosa::ConstOp>();
+  const SmallVector<int64_t> actValues =
+      aConst ? flattenConstValues(aConst) : SmallVector<int64_t>{};
+  const int64_t fullK = operands.aType.getShape()[2];
+
   SmallVector<SmallVector<uint32_t>> addrs;
   const int64_t numBatches = numBatchesFor(operands.rows);
   for (int64_t b = 0; b < numBatches; b++) {
@@ -194,10 +279,23 @@ SmallVector<SmallVector<uint32_t>> allocateBatchChunkInputAddrs(
         for (int64_t k = 0; k < operands.numKTiles; k++)
           kAddrs.push_back(chained->second[k][b] + chunkOffsetBytes);
       } else {
-        const uint32_t tileBytes =
-            activationTileBytes(operands.aType, batchChunkRows(batchRows, c));
-        for (int64_t k = 0; k < operands.numKTiles; k++)
-          kAddrs.push_back(layout.allocateInput(tileBytes));
+        const int64_t chunkRows = batchChunkRows(batchRows, c);
+        const uint32_t tileBytes = activationTileBytes(operands.aType, chunkRows);
+        for (int64_t k = 0; k < operands.numKTiles; k++) {
+          const uint32_t addr = layout.allocateInput(tileBytes);
+          if (aConst) {
+            layout.recordData(
+                addr,
+                extractTileBytes(actValues, operands.rows, fullK,
+                                 /*rowBase=*/b * kMaxBatchRows + c * kBatchChunkRows,
+                                 /*colBase=*/k * kTileWidth, chunkRows,
+                                 kTileWidth, elemBytes));
+          } else {
+            layout.recordInputTile(addr, tileBytes);
+            layout.setInputValidBytes(fullK * elemBytes);
+          }
+          kAddrs.push_back(addr);
+        }
       }
       addrs.push_back(std::move(kAddrs));
     }
@@ -254,12 +352,23 @@ SmallVector<BatchChunk> emitBatchMatmuls(
 // new batch MUST reload the weight again. But do it via emitBatchMatmuls rather
 // than here
 SmallVector<uint32_t> allocateBatchKTileWeightAddrs(
-    const MatmulOperands& operands, DdrLayout& layout) {
+    const MatmulOperands& operands, int64_t nTile, DdrLayout& layout) {
   const uint32_t weightBytes = weightTileBytes(operands.bType);
+  const SmallVector<int64_t> weightValues = flattenConstValues(operands.bConst);
+  const int64_t fullK = operands.bType.getShape()[1];
+  const int64_t fullN = operands.bType.getShape()[2];
+  const int64_t weightElemBytes = operands.bType.getElementTypeBitWidth() / 8;
   SmallVector<uint32_t> addrs;
   addrs.reserve(operands.numKTiles);
-  for (int64_t k = 0; k < operands.numKTiles; k++)
-    addrs.push_back(layout.allocateWeight(weightBytes));
+  for (int64_t k = 0; k < operands.numKTiles; k++) {
+    const uint32_t addr = layout.allocateWeight(weightBytes);
+    layout.recordData(
+        addr, extractTileBytes(weightValues, fullK, fullN,
+                               /*rowBase=*/k * kTileWidth,
+                               /*colBase=*/nTile * kTileWidth, kTileWidth,
+                               kTileWidth, weightElemBytes));
+    addrs.push_back(addr);
+  }
   return addrs;
 }
 
@@ -309,6 +418,11 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
           op,
           "multiplier/shift must each be a single-element tosa.const "
           "(per-tensor, not per-channel)");
+    if (*multiplier < 0 || *multiplier > 0x1FFFF)
+      return rewriter.notifyMatchFailure(
+          op, "rescale multiplier does not fit ACTIVATE's 17-bit scale_m "
+              "field - requantize with sw/tools/train_mnist.py's "
+              "quantize_multiplier (mult_bits=17) instead of a wider value");
 
     std::optional<MatmulChain> chain = matchMatmulChain(op.getInput());
     if (!chain)
@@ -320,6 +434,12 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
     FailureOr<MatmulOperands> operands =
         matchMatmulOperands(chain->matmul, rewriter);
     if (failed(operands)) return failure();
+
+    std::optional<tosa::ClampOp> reluClamp = matchReluClamp(op);
+    // TODO: Leaky relu support
+    const macaque_isa::ActFunc actFunc =
+        reluClamp ? macaque_isa::ActFunc::Relu : macaque_isa::ActFunc::Passthrough;
+    Value logicalOutput = logicalRescaleOutput(op);
 
     const bool isIntermediate = feedsMatmul(op);
 
@@ -348,8 +468,8 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
         // batch's last, so all of a batch's chunks read back from the same
         // bank.
         SmallVector<uint32_t> weightAddrs =
-            allocateBatchKTileWeightAddrs(*operands, layout);
-        const uint32_t biasAddr = allocateBiasAddr(chain->biasConst, layout);
+            allocateBatchKTileWeightAddrs(*operands, n, layout);
+        const uint32_t biasAddr = allocateBiasAddr(chain->biasConst, n, layout);
         const int64_t numBatches = numBatchesFor(operands->rows);
         int64_t chunkOffset = 0;
         for (int64_t b = 0; b < numBatches; b++) {
@@ -365,8 +485,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
             const bool last = c == numChunks - 1;
             ActivateOp::create(
                 rewriter, loc, TypeRange{},
-                /*act_func=*/
-                static_cast<uint8_t>(macaque_isa::ActFunc::Passthrough),
+                /*act_func=*/static_cast<uint8_t>(actFunc),
                 static_cast<uint32_t>(*multiplier),
                 static_cast<uint8_t>(*shift),
                 static_cast<uint8_t>(chunks[c].rows),
@@ -375,20 +494,24 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
             const uint32_t outputTileBytes =
                 static_cast<uint32_t>(chunks[c].rows * kTileWidth) * elemBytes;
-            const uint32_t outputAddr =
-                isIntermediate
-                    ? scratchAddrs[n][b] + static_cast<uint32_t>(
-                                               chunks[c].rowBase * kTileWidth) *
-                                               elemBytes
-                    : layout.allocateOutput(outputTileBytes);
+            uint32_t outputAddr;
+            if (isIntermediate) {
+              outputAddr = scratchAddrs[n][b] +
+                          static_cast<uint32_t>(chunks[c].rowBase * kTileWidth) * elemBytes;
+            } else {
+              outputAddr = layout.allocateOutput(outputTileBytes);
+              layout.recordOutputTile(outputAddr, outputTileBytes);
+              layout.setOutputValidBytes(outType.getShape()[2] * elemBytes);
+            }
             StoreOp::create(rewriter, loc, TypeRange{}, outputAddr,
                             static_cast<uint16_t>(outputTileBytes));
           }
         }
       }
       if (isIntermediate)
-        intermediateAddr[op.getResult()] = std::move(scratchAddrs);
+        intermediateAddr[logicalOutput] = std::move(scratchAddrs);
 
+      if (reluClamp) rewriter.eraseOp(*reluClamp);
       rewriter.eraseOp(op);
       if (chain->biasAdd) rewriter.eraseOp(chain->biasAdd);
       rewriter.eraseOp(chain->matmul);
@@ -414,8 +537,8 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
         if (m == 0) {
           // Bias must be loaded before each (N-tile, M-chunk)'s first
           // matmul runs.
-          emitBias(chain->biasConst, layout, loc, rewriter);
-          emitFlatFreshChunkMatmul(*operands, chunkRows, kTileInputAddrs[m][0],
+          emitBias(chain->biasConst, n, layout, loc, rewriter);
+          emitFlatFreshChunkMatmul(*operands, n, chunkRows, kTileInputAddrs[m][0],
                                    layout, loc, rewriter);
         } else {
           emitFlatHeldChunkMatmul(*operands, chunkRows, kTileInputAddrs[m][0],
@@ -424,8 +547,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
         ActivateOp::create(
             rewriter, loc, TypeRange{},
-            /*act_func=*/
-            static_cast<uint8_t>(macaque_isa::ActFunc::Passthrough),
+            /*act_func=*/static_cast<uint8_t>(actFunc),
             static_cast<uint32_t>(*multiplier), static_cast<uint8_t>(*shift),
             static_cast<uint8_t>(chunkRows));
 
@@ -436,16 +558,22 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
         // Write this chunk's requantized INT8 result back to DDR3: Scratch
         // A/B if a downstream matmul consumes it (intermediate, layer-to-
         // layer), Output region if final.
-        const uint32_t outputAddr =
-            isIntermediate ? scratchAddrs[n][m]
-                           : layout.allocateOutput(outputTileBytes);
+        uint32_t outputAddr;
+        if (isIntermediate) {
+          outputAddr = scratchAddrs[n][m];
+        } else {
+          outputAddr = layout.allocateOutput(outputTileBytes);
+          layout.recordOutputTile(outputAddr, outputTileBytes);
+          layout.setOutputValidBytes(outType.getShape()[2] * elemBytes);
+        }
         StoreOp::create(rewriter, loc, TypeRange{}, outputAddr,
                         static_cast<uint16_t>(outputTileBytes));
       }
     }
     if (isIntermediate)
-      intermediateAddr[op.getResult()] = std::move(scratchAddrs);
+      intermediateAddr[logicalOutput] = std::move(scratchAddrs);
 
+    if (reluClamp) rewriter.eraseOp(*reluClamp);
     rewriter.eraseOp(op);
     if (chain->biasAdd) rewriter.eraseOp(chain->biasAdd);
     rewriter.eraseOp(chain->matmul);
@@ -461,7 +589,7 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
 namespace macaque::codegen::conversion {
 
-LogicalResult lowerTosaToMacaque(Block& block) {
+LogicalResult lowerTosaToMacaque(Block& block, CompiledProgramInfo* info) {
   MLIRContext* ctx = block.getParentOp() ? block.getParentOp()->getContext()
                                          : block.front().getContext();
   ConversionTarget target(*ctx);
@@ -476,14 +604,31 @@ LogicalResult lowerTosaToMacaque(Block& block) {
   patterns.add<RescaleToMacaque>(ctx, layout, intermediateAddr);
 
   SmallVector<Operation*> ops;
-  for (Operation& op : block) ops.push_back(&op);
+  for (Operation& op : block)
+    if (!op.hasTrait<OpTrait::IsTerminator>()) ops.push_back(&op);
 
-  if (failed(applyPartialConversion(ops, target, std::move(patterns))))
+  // Prevent double-erase crashing. RescaleToMacaque run its own cleanup
+  // erasing matmul, add and rescale but if the add is zero (bias is all zero), then 
+  // thefolding mode will also erase it.
+  ConversionConfig config;
+  config.foldingMode = DialectConversionFoldingMode::Never;
+
+  if (failed(applyPartialConversion(ops, target, std::move(patterns), config)))
     return failure();
 
   // clean up the unused consts
   for (Operation& op : llvm::make_early_inc_range(block)) {
     if (isa<tosa::ConstOp>(op) && op.use_empty()) op.erase();
+  }
+
+  if (info) {
+    for (const auto& [addr, bytes] : layout.data()) info->data.emplace_back(addr, bytes);
+    for (const auto& [addr, bytes] : layout.inputTiles())
+      info->inputTiles.emplace_back(addr, bytes);
+    for (const auto& [addr, bytes] : layout.outputTiles())
+      info->outputTiles.emplace_back(addr, bytes);
+    info->inputValidBytes = layout.inputValidBytes();
+    info->outputValidBytes = layout.outputValidBytes();
   }
   return success();
 }

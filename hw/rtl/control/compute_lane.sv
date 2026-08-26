@@ -68,7 +68,7 @@ module compute_lane (
     output logic [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
 
     // ACTIVATE requantize parameters
-    output logic               [27:0] act_scale_m,
+    output logic               [16:0] act_scale_m,
     output logic               [ 4:0] act_scale_shift,
     output npu_pkg::act_func_t        act_func,
 

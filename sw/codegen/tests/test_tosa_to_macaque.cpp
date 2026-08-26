@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <vector>
+
 #include "macaque/Conversion/TosaToMacaque.hpp"
 #include "macaque/Dialect/MacaqueOps.hpp"
 #include "macaque/common/isa.hpp"
@@ -343,6 +346,108 @@ TEST(TosaToMacaque, PartialKTilePadsToTwoFullTiles) {
   EXPECT_EQ(loadWeights[1].getByteCount(), 14u * 14u);
   EXPECT_EQ(loadInputs[0].getByteCount(), 2u * 14u);
   EXPECT_EQ(loadInputs[1].getByteCount(), 2u * 14u);
+}
+
+TEST(TosaToMacaque, PartialNTileDataIsZeroPadded) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  constexpr int64_t kRows = 2, kK = 14, kN = 20;
+  auto weightVal = [](int64_t k, int64_t n) -> int8_t {
+    return static_cast<int8_t>((k + n) % 7 - 3);
+  };
+  auto biasVal = [](int64_t n) -> int32_t { return static_cast<int32_t>(n * 10 - 5); };
+
+  auto aTy = RankedTensorType::get({1, kRows, kK}, i8Ty);
+  auto bTy = RankedTensorType::get({1, kK, kN}, i8Ty);
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto biasTy = RankedTensorType::get({1, 1, kN}, i32Ty);
+
+  auto a = tosa::ConstOp::create(builder, loc, aTy,
+                                 DenseElementsAttr::get(aTy, static_cast<int8_t>(1)));
+
+  std::vector<int8_t> bData;
+  for (int64_t k = 0; k < kK; ++k)
+    for (int64_t n = 0; n < kN; ++n) bData.push_back(weightVal(k, n));
+  auto b = tosa::ConstOp::create(builder, loc, bTy,
+                                 DenseElementsAttr::get(bTy, ArrayRef<int8_t>(bData)));
+
+  auto aZp = tosa::ConstOp::create(builder, loc, zpTy,
+                                   DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(builder, loc, zpTy,
+                                   DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto matmulOutTy = RankedTensorType::get({1, kRows, kN}, i32Ty);
+  auto matmul = tosa::MatMulOp::create(builder, loc, matmulOutTy, a.getResult(),
+                                       b.getResult(), aZp.getResult(), bZp.getResult());
+
+  std::vector<int32_t> biasData;
+  for (int64_t n = 0; n < kN; ++n) biasData.push_back(biasVal(n));
+  auto bias = tosa::ConstOp::create(builder, loc, biasTy,
+                                    DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+  auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
+                                 bias.getResult());
+  buildRescale(builder, loc, add.getResult(), i8Ty, /*multiplier=*/1, /*shift=*/0);
+
+  CompiledProgramInfo info;
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block, &info)));
+
+  SmallVector<LoadWeightOp> loadWeights;
+  SmallVector<LoadBiasOp> loadBiases;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<LoadWeightOp>(op)) loadWeights.push_back(o);
+    if (auto o = dyn_cast<LoadBiasOp>(op)) loadBiases.push_back(o);
+  }
+  ASSERT_EQ(loadWeights.size(), 2u);  // ceil(20/14) = 2 N-tiles
+  ASSERT_EQ(loadBiases.size(), 2u);
+
+  auto findData = [&](uint32_t addr) -> const SmallVector<uint8_t>* {
+    for (auto& [recordedAddr, bytes] : info.data)
+      if (recordedAddr == addr) return &bytes;
+    return nullptr;
+  };
+
+  // N-tile 0: fully real (global columns 0-13).
+  const SmallVector<uint8_t>* w0 = findData(loadWeights[0].getDdr3Addr());
+  ASSERT_NE(w0, nullptr);
+  ASSERT_EQ(w0->size(), 14u * 14u);
+  for (int64_t k = 0; k < 14; ++k)
+    for (int64_t n = 0; n < 14; ++n)
+      EXPECT_EQ(static_cast<int8_t>((*w0)[k * 14 + n]), weightVal(k, n))
+          << "k=" << k << " n=" << n;
+
+  // N-tile 1 (the boundary tile): local cols 0-5 (global 14-19) are real,
+  // local cols 6-13 are the zero-padding convention in action.
+  const SmallVector<uint8_t>* w1 = findData(loadWeights[1].getDdr3Addr());
+  ASSERT_NE(w1, nullptr);
+  ASSERT_EQ(w1->size(), 14u * 14u);
+  for (int64_t k = 0; k < 14; ++k) {
+    for (int64_t localN = 0; localN < 14; ++localN) {
+      const int64_t n = 14 + localN;
+      const int8_t expected = n < kN ? weightVal(k, n) : 0;
+      EXPECT_EQ(static_cast<int8_t>((*w1)[k * 14 + localN]), expected)
+          << "k=" << k << " localN=" << localN;
+    }
+  }
+
+  // Bias tile 1: same boundary, but int32 little-endian.
+  const SmallVector<uint8_t>* bias1 = findData(loadBiases[1].getDdr3Addr());
+  ASSERT_NE(bias1, nullptr);
+  ASSERT_EQ(bias1->size(), 14u * 4u);
+  for (int64_t localN = 0; localN < 14; ++localN) {
+    const int64_t n = 14 + localN;
+    const int32_t expected = n < kN ? biasVal(n) : 0;
+    int32_t got = 0;
+    for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
+      got |= static_cast<int32_t>((*bias1)[localN * 4 + byteIdx]) << (8 * byteIdx);
+    EXPECT_EQ(got, expected) << "localN=" << localN;
+  }
 }
 
 TEST(TosaToMacaque, NTilesRescaleIntoTwoIndependentGroups) {
@@ -918,6 +1023,44 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   EXPECT_NE(store.getDdr3Addr(), loadInput.getDdr3Addr());
 }
 
+TEST(TosaToMacaque, MultiplierAtSeventeenBitMaxConverts) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
+  buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
+              /*multiplier=*/0x1FFFF, /*shift=*/9);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  ActivateOp activate;
+  for (Operation& op : block)
+    if (auto o = dyn_cast<ActivateOp>(op)) activate = o;
+  ASSERT_TRUE(activate);
+  EXPECT_EQ(activate.getActScaleM(), 0x1FFFFu);
+}
+
+TEST(TosaToMacaque, MultiplierAboveSeventeenBitMaxFailsToConvert) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
+  buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
+              /*multiplier=*/0x20000, /*shift=*/9);
+
+  EXPECT_TRUE(failed(lowerTosaToMacaque(block)));
+}
+
 TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
@@ -1204,4 +1347,88 @@ TEST(TosaToMacaque, NonzeroAZpFailsToConvert) {
               /*multiplier=*/1, /*shift=*/0);
 
   EXPECT_TRUE(failed(lowerTosaToMacaque(block)));
+}
+
+TEST(TosaToMacaque, ZeroBiasIsNotFoldedAway) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
+  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  auto bias = tosa::ConstOp::create(
+      builder, loc, biasTy,
+      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(std::vector<int32_t>(14, 0))));
+  auto add = tosa::AddOp::create(builder, loc, matmul.getType(), matmul.getResult(),
+                                 bias.getResult());
+  buildRescale(builder, loc, add.getResult(), builder.getIntegerType(8),
+              /*multiplier=*/1, /*shift=*/0);
+
+  CompiledProgramInfo info;
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block, &info)));
+
+  SmallVector<LoadBiasOp> loadBiases;
+  for (Operation& op : block)
+    if (auto o = dyn_cast<LoadBiasOp>(op)) loadBiases.push_back(o);
+  ASSERT_EQ(loadBiases.size(), 1u);
+
+  const SmallVector<uint8_t>* biasBytes = nullptr;
+  for (auto& [addr, bytes] : info.data)
+    if (addr == loadBiases[0].getDdr3Addr()) biasBytes = &bytes;
+  ASSERT_NE(biasBytes, nullptr);
+  ASSERT_EQ(biasBytes->size(), 14u * 4u);
+  for (uint8_t b : *biasBytes) EXPECT_EQ(b, 0u);
+}
+
+// A chained rescale->clamp(0, 127) should select ActFunc::Relu for that
+// layer, erase the clamp entirely
+TEST(TosaToMacaque, ReluClampFusesIntoActivateAndErases) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul1 = buildConstMatmul(builder, loc, /*rows=*/2);
+  tosa::RescaleOp rescale1 = buildRescale(builder, loc, matmul1.getResult(),
+                                         builder.getIntegerType(8),
+                                         /*multiplier=*/1, /*shift=*/0);
+  auto relu = tosa::ClampOp::create(
+      builder, loc, rescale1.getType(), rescale1.getResult(),
+      builder.getI8IntegerAttr(0), builder.getI8IntegerAttr(127),
+      tosa::NanPropagationMode::PROPAGATE);
+
+  tosa::MatMulOp matmul2 =
+      buildChainedMatmul(builder, loc, relu.getResult(), /*weightValue=*/3);
+  buildRescale(builder, loc, matmul2.getResult(), builder.getIntegerType(8),
+              /*multiplier=*/1, /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  // The clamp must not survive as its own op - it has no macaque
+  // equivalent, it's fused into layer 1's ActivateOp.
+  for (Operation& op : block) EXPECT_FALSE(isa<tosa::ClampOp>(op));
+
+  SmallVector<ActivateOp> activates;
+  SmallVector<StoreOp> stores;
+  SmallVector<LoadInputOp> loadInputs;
+  for (Operation& op : block) {
+    if (auto o = dyn_cast<ActivateOp>(op)) activates.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op)) stores.push_back(o);
+    if (auto o = dyn_cast<LoadInputOp>(op)) loadInputs.push_back(o);
+  }
+  ASSERT_EQ(activates.size(), 2u);
+  EXPECT_EQ(activates[0].getActFunc(), static_cast<uint8_t>(macaque_isa::ActFunc::Relu));
+  EXPECT_EQ(activates[1].getActFunc(),
+           static_cast<uint8_t>(macaque_isa::ActFunc::Passthrough));
+
+  ASSERT_EQ(stores.size(), 2u);
+  ASSERT_GE(loadInputs.size(), 2u);
+  EXPECT_EQ(loadInputs[1].getDdr3Addr(), stores[0].getDdr3Addr());
 }

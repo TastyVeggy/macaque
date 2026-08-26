@@ -11,7 +11,7 @@ module activate_unit (
     input  logic [11:0] tile_params, // number of output rows (M dimension)
 
     // Requantize parameters
-    input logic               [27:0] scale_m,      // 28-bit unsigned fixed-point M
+    input logic               [16:0] scale_m,      // 17-bit unsigned fixed-point M 
     input logic               [ 4:0] scale_shift,  // right shift, 0..31
     input npu_pkg::act_func_t        act_func,     // activation-function selector
 
@@ -45,11 +45,12 @@ module activate_unit (
 
   assign num_rows = tile_params[npu_pkg::DTYPE_BRAM_ADDR_W-1:0];
 
-  logic signed [63:0] prod_r   [npu_pkg::ARRAY_SIZE];  // Stage 1 out
-  logic signed [63:0] requant_r[npu_pkg::ARRAY_SIZE];  // Stage 2 out
+  logic signed [npu_pkg::DTYPE_ACC_W-1:0] ob_rdata_r[npu_pkg::ARRAY_SIZE];  // Stage 1 out
+  logic signed [63:0] prod_r   [npu_pkg::ARRAY_SIZE];  // Stage 2 out
+  logic signed [63:0] requant_r[npu_pkg::ARRAY_SIZE];  // Stage 3 out
 
-  logic valid_a, valid_b;  // token cascade
-  logic [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] row_a, row_b;  // carried row index
+  logic valid_pre, valid_a, valid_b;  // token cascade
+  logic [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] row_pre, row_a, row_b;  // carried row index
   logic s1_consume;  // a row is being consumed this cycle
 
   assign s1_consume = (state == ACT_PIPELINE) && (act_count > 0 && act_count <= num_rows);
@@ -60,12 +61,12 @@ module activate_unit (
 
   always_comb begin
     for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) begin
-      // Stage 2: round-half-up then arithmetic right shift.
+      // Stage 3: round-half-up then arithmetic right shift.
       requant_next[i] = (scale_shift > 0)
         ? (prod_r[i] + (64'sd1 << (scale_shift - 1))) >>> scale_shift
         : prod_r[i] >>> scale_shift;
 
-      // Stage 3: activation function + clamp to signed INT8.
+      // Stage 4: activation function + clamp to signed INT8.
       unique case (act_func)
         npu_pkg::ACT_RELU: act_out = (requant_r[i] < 0) ? '0 : requant_r[i];
         npu_pkg::ACT_LEAKY_RELU:
@@ -87,33 +88,45 @@ module activate_unit (
       act_count <= '0;
       qb_we     <= '0;
       qb_waddr  <= '0;
+      valid_pre <= '0;
       valid_a   <= '0;
       valid_b   <= '0;
+      row_pre   <= '0;
       row_a     <= '0;
       row_b     <= '0;
       for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) begin
-        prod_r[i]    <= '0;
-        requant_r[i] <= '0;
-        qb_wdata[i]  <= '0;
+        ob_rdata_r[i] <= '0;
+        prod_r[i]     <= '0;
+        requant_r[i]  <= '0;
+        qb_wdata[i]   <= '0;
       end
     end else begin
 
-      // Stage 1 (mult): prod_r = acc * M
+      // Stage 1 (latch): capture the BRAM read output on its own cycle,
+      // off the critical path of the multiply below.
       if (s1_consume) begin
-        for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++)
-        prod_r[i] <= $signed(ob_rdata[i]) * $signed({4'b0, scale_m});
+        for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) ob_rdata_r[i] <= ob_rdata[i];
       end
-      valid_a <= s1_consume;
-      row_a   <= act_count - 1'b1;
+      valid_pre <= s1_consume;
+      row_pre   <= act_count - 1'b1;
 
-      // Stage 2 (round+shift): register the combinational requant_next.
+      // Stage 2 (mult): prod_r = acc * M, reading the latched acc from
+      // stage 1 instead of ob_rdata directly.
+      if (valid_pre) begin
+        for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++)
+        prod_r[i] <= $signed(ob_rdata_r[i]) * $signed({1'b0, scale_m});
+      end
+      valid_a <= valid_pre;
+      row_a   <= row_pre;
+
+      // Stage 3 (round+shift): register the combinational requant_next.
       if (valid_a) begin
         for (int i = 0; i < npu_pkg::ARRAY_SIZE; i++) requant_r[i] <= requant_next[i];
       end
       valid_b <= valid_a;
       row_b   <= row_a;
 
-      // Stage 3: activation + clamp, then write (register the combinational next).
+      // Stage 4: activation + clamp, then write (register the combinational next).
       qb_we   <= valid_b;
       if (valid_b) begin
         qb_waddr <= row_b;
@@ -144,8 +157,8 @@ module activate_unit (
         end
 
         ACT_DRAIN: begin
-          // Wait until the final rows have flowed out of all 3 pipeline stages.
-          if (!valid_a && !valid_b && !qb_we) begin
+          // Wait until the final rows have flowed out of all 4 pipeline stages.
+          if (!valid_pre && !valid_a && !valid_b && !qb_we) begin
             state <= ACT_DONE;
           end
         end

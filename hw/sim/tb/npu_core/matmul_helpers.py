@@ -11,6 +11,11 @@ OP_STORE = 0x5
 
 ACT_PASSTHROUGH = 0x2
 
+# ACTIVATE's act_scale_m occupies the TOP 17 bits of ddr3_addr (instr[55:39]),
+# not the bottom. A raw multiplier value must be shifted
+# left by this
+ACT_SCALE_M_SHIFT = 11
+
 WEIGHT_BASE = 0x001000
 BIAS_BASE = 0x006000
 ACT_BASE = 0x008000
@@ -145,7 +150,8 @@ def build(A, W, weight_base=WEIGHT_BASE, bias_base=BIAS_BASE, act_base=ACT_BASE,
                     enc(OP_MATMUL, acc_mode=(0 if ki == 0 else 1), tile_params=ms)
                 )
             instrs.append(
-                enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, byte_count=0, tile_params=ms)
+                enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+                    byte_count=0, tile_params=ms)
             )
             instrs.append(enc(OP_STORE, ddr3_addr=oaddr, byte_count=ms * ARRAY))
 

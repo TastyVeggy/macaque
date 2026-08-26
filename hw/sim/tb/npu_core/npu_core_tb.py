@@ -5,6 +5,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 from matmul_helpers import (
     ARRAY,
     ACT_PASSTHROUGH,
+    ACT_SCALE_M_SHIFT,
     AxiRam,
     OP_ACTIVATE,
     OP_LOAD_ACT,
@@ -357,19 +358,19 @@ async def test_matmul_weight_hold_m_streaming(dut):
         enc(OP_LOAD_B, ddr3_addr=B1_ADDR, byte_count=ARRAY * 4),
         enc(OP_LOAD_ACT, ddr3_addr=A0_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
         enc(OP_STORE, ddr3_addr=OUT0_ADDR, byte_count=ARRAY * ARRAY),
 
         # Held: reuse bank 1's already-loaded W1/B1, no LOAD_W/LOAD_B.
         enc(OP_LOAD_ACT, ddr3_addr=A1_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
         enc(OP_STORE, ddr3_addr=OUT1_ADDR, byte_count=ARRAY * ARRAY),
 
         # Held again, proving it's not just a one-shot bypass.
         enc(OP_LOAD_ACT, ddr3_addr=A2_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
         enc(OP_STORE, ddr3_addr=OUT2_ADDR, byte_count=ARRAY * ARRAY),
 
         # Drop the hold: fresh load into the never-touched bank 0, proving it
@@ -379,7 +380,7 @@ async def test_matmul_weight_hold_m_streaming(dut):
         enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4),
         enc(OP_LOAD_ACT, ddr3_addr=A3_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1, tile_params=ARRAY),
+        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
         enc(OP_STORE, ddr3_addr=OUT3_ADDR, byte_count=ARRAY * ARRAY),
     ]
 
@@ -517,7 +518,7 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
         last = m == M_CHUNKS - 1
         # ddr3_addr=1: ACTIVATE's ddr3_addr field is act_scale_m (passthrough
         # multiplier) - leaving it 0 multiplies every result by zero.
-        instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1,
+        instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
                           byte_count=act_byte_count(0, m * CHUNK, bank_hold=0 if last else 1),
                           tile_params=ARRAY))
         instrs.append(enc(OP_STORE, ddr3_addr=OUT_ADDR[m], byte_count=ARRAY * ARRAY))
@@ -529,7 +530,7 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
     instrs.append(enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4))
     instrs.append(enc(OP_LOAD_ACT, ddr3_addr=A_SANITY_ADDR, byte_count=ARRAY * ARRAY))
     instrs.append(enc(OP_MATMUL, acc_mode=0, target=0, ddr3_addr=0, tile_params=ARRAY))
-    instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1,
+    instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
                       byte_count=act_byte_count(0, 0, bank_hold=0), tile_params=ARRAY))
     instrs.append(enc(OP_STORE, ddr3_addr=OUT_SANITY_ADDR, byte_count=ARRAY * ARRAY))
 

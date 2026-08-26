@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 
 #include "macaque/Conversion/TilingCommon.hpp"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
@@ -55,6 +57,28 @@ class DdrLayout {
   llvm::SmallVector<llvm::SmallVector<uint32_t>> allocateScratch(
       int64_t numNTiles, int64_t rows, int64_t numFlatChunks, int64_t elemBytes);
 
+  // Records the real DDR3 bytes for a compile-time-known region. 
+  // `bytes` is expected to already be zero-padded to that tile's full
+  // byte_count by the caller 
+  void recordData(uint32_t addr, llvm::ArrayRef<uint8_t> bytes) {
+    data_.emplace_back(addr, llvm::SmallVector<uint8_t>(bytes.begin(), bytes.end()));
+  }
+
+  llvm::ArrayRef<std::pair<uint32_t, llvm::SmallVector<uint8_t>>> data() const {
+    return data_;
+  }
+
+  // Records one tile of the runtime-provided input
+  void recordInputTile(uint32_t addr, uint32_t bytes) { input_.emplace_back(addr, bytes); }
+  void recordOutputTile(uint32_t addr, uint32_t bytes) { output_.emplace_back(addr, bytes); }
+  void setInputValidBytes(int64_t bytes) { input_valid_bytes_ = bytes; }
+  void setOutputValidBytes(int64_t bytes) { output_valid_bytes_ = bytes; }
+
+  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> inputTiles() const { return input_; }
+  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> outputTiles() const { return output_; }
+  int64_t inputValidBytes() const { return input_valid_bytes_; }
+  int64_t outputValidBytes() const { return output_valid_bytes_; }
+
  private:
   static constexpr uint32_t kWeightBase = 0x0000'1000;
 
@@ -72,6 +96,11 @@ class DdrLayout {
   uint32_t scratch_b_base_;
   uint32_t output_next_;
   bool next_is_a_ = true;
+  llvm::SmallVector<std::pair<uint32_t, llvm::SmallVector<uint8_t>>> data_;
+  llvm::SmallVector<std::pair<uint32_t, uint32_t>> input_;
+  llvm::SmallVector<std::pair<uint32_t, uint32_t>> output_;
+  int64_t input_valid_bytes_ = 0;
+  int64_t output_valid_bytes_ = 0;
 };
 
 }  // namespace macaque::codegen::conversion

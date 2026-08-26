@@ -124,7 +124,7 @@ module npu_core (
   logic pmu_freeze, run_active, mac_active, stall, matmul_start;
   logic acc_mode;  // 1 = K-tiling accumulate (seed array from out_buffer partial sums)
   logic [11:0] tile_params;
-  logic [27:0] act_scale_m;
+  logic [16:0] act_scale_m;
   logic [4:0] act_scale_shift;
   npu_pkg::act_func_t act_func;
   npu_pkg::bram_addr_t mat_row_base, act_row_base;

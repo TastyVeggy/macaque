@@ -99,7 +99,7 @@ TEST(Engine, LoadMatmulActivateStore) {
   const Instruction act{Opcode::Activate,
                         false,
                         static_cast<uint8_t>(ActFunc::Relu),
-                        kM,
+                        kM << 11,
                         kShift,
                         0,
                         static_cast<uint8_t>(kArraySize)};
@@ -173,7 +173,7 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
   const Instruction act{Opcode::Activate,
                         false,
                         static_cast<uint8_t>(ActFunc::Relu),
-                        kM,
+                        kM << 11,
                         kShift,
                         0,
                         static_cast<uint8_t>(kArraySize)};

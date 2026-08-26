@@ -94,9 +94,29 @@ inline std::optional<MatmulChain> matchMatmulChain(mlir::Value rescaleInput) {
   return MatmulChain{matmul, addOp, biasConst};
 }
 
+// If `rescale`'s one and only use is a tosa.clamp shaped like a quantized
+// ReLU (min_val == 0, max_val >= the INT8 max), returns that clamp 
+// (to fuse ReLU)
+inline std::optional<mlir::tosa::ClampOp> matchReluClamp(mlir::tosa::RescaleOp rescale) {
+  if (!rescale->hasOneUse()) return std::nullopt;
+  auto clamp = mlir::dyn_cast<mlir::tosa::ClampOp>(*rescale->user_begin());
+  if (!clamp) return std::nullopt;
+  auto minAttr = mlir::dyn_cast<mlir::IntegerAttr>(clamp.getMinValAttr());
+  auto maxAttr = mlir::dyn_cast<mlir::IntegerAttr>(clamp.getMaxValAttr());
+  if (!minAttr || !maxAttr) return std::nullopt;
+  if (minAttr.getValue().getSExtValue() != 0) return std::nullopt;
+  if (maxAttr.getValue().getSExtValue() < 127) return std::nullopt;
+  return clamp;
+}
+
+inline mlir::Value logicalRescaleOutput(mlir::tosa::RescaleOp rescale) {
+  if (auto clamp = matchReluClamp(rescale)) return clamp->getResult();
+  return rescale.getOutput();
+}
+
 // check if it's an intermediate (layer-to-layer) activation
 inline bool feedsMatmul(mlir::tosa::RescaleOp rescale) {
-  for (mlir::Operation* user : rescale->getUsers())
+  for (mlir::Operation* user : logicalRescaleOutput(rescale).getUsers())
     if (mlir::isa<mlir::tosa::MatMulOp>(user)) return true;
   return false;
 }
