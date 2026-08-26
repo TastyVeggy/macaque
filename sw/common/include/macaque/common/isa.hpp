@@ -37,13 +37,13 @@ enum class ActFunc : uint8_t { Relu = 0, LeakyRelu = 1, Passthrough = 2 };
 constexpr int kLeakyReluShift = 4;
 
 struct Instruction {
-  Opcode opcode;         // [63:60]
-  bool acc_mode;         // [59]
-  uint8_t target;        // [58:56]
-  uint32_t ddr3_addr;    // [55:28]
-  uint16_t byte_count;   // [27:12]
-  uint8_t reserved;      // [11:8]
-  uint8_t tile_params;   // [7:0]
+  Opcode opcode;       // [63:60]
+  bool acc_mode;       // [59]
+  uint8_t target;      // [58:56]
+  uint32_t ddr3_addr;  // [55:28]
+  uint16_t byte_count; // [27:12]
+  uint8_t reserved;    // [11:8]
+  uint8_t tile_params; // [7:0]
 
   [[nodiscard]] uint64_t encode() const {
     return (static_cast<uint64_t>(opcode) & 0xF) << 60 |
@@ -81,26 +81,26 @@ struct Instruction {
 //   target[58:56]     -> act_func
 //   tile_params       -> num_rows       (M dimension; `reserved` is spare,
 //                       not part of this - see the field layout note up top)
-[[nodiscard]] inline constexpr uint32_t scale_m(const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr uint32_t scale_m(const Instruction &i) noexcept {
   return (i.ddr3_addr >> 11) & 0x1FFFF;
 }
-[[nodiscard]] inline constexpr uint32_t scale_shift(
-    const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr uint32_t
+scale_shift(const Instruction &i) noexcept {
   return i.byte_count & 0x1F;
 }
-[[nodiscard]] inline constexpr uint8_t act_row_base(
-    const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr uint8_t
+act_row_base(const Instruction &i) noexcept {
   return static_cast<uint8_t>((i.byte_count >> 5) & 0xFF);
 }
-[[nodiscard]] inline constexpr bool act_bank_hold(
-    const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr bool
+act_bank_hold(const Instruction &i) noexcept {
   return ((i.byte_count >> 13) & 0x1) != 0;
 }
-[[nodiscard]] inline constexpr ActFunc act_func(const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr ActFunc act_func(const Instruction &i) noexcept {
   return static_cast<ActFunc>(i.target);
 }
-[[nodiscard]] inline constexpr uint32_t num_rows(
-    const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr uint32_t
+num_rows(const Instruction &i) noexcept {
   return i.tile_params;
 }
 
@@ -108,11 +108,11 @@ struct Instruction {
 //   target[0]      -> weight_hold
 //   ddr3_addr[7:0] -> mat_row_base (Must match the corresponding ACTIVATE's
 //                    row_base above.)
-[[nodiscard]] inline constexpr bool weight_hold(const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr bool weight_hold(const Instruction &i) noexcept {
   return (i.target & 0x1) != 0;
 }
-[[nodiscard]] inline constexpr uint8_t mat_row_base(
-    const Instruction& i) noexcept {
+[[nodiscard]] inline constexpr uint8_t
+mat_row_base(const Instruction &i) noexcept {
   return static_cast<uint8_t>(i.ddr3_addr & 0xFF);
 }
-}  // namespace macaque::common::isa
+} // namespace macaque::common::isa

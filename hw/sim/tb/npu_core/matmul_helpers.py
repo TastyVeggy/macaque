@@ -68,8 +68,14 @@ def make_tiles(total, size=ARRAY):
     return tiles
 
 
-def build(A, W, weight_base=WEIGHT_BASE, bias_base=BIAS_BASE, act_base=ACT_BASE,
-          out_base=OUT_BASE):
+def build(
+    A,
+    W,
+    weight_base=WEIGHT_BASE,
+    bias_base=BIAS_BASE,
+    act_base=ACT_BASE,
+    out_base=OUT_BASE,
+):
     """Return (instrs, ddr, out).
 
     instrs: list of 64-bit instruction words.
@@ -137,21 +143,38 @@ def build(A, W, weight_base=WEIGHT_BASE, bias_base=BIAS_BASE, act_base=ACT_BASE,
         for mi, (mo, ms) in enumerate(M_tiles):
             for ki, (ko, ks) in enumerate(K_tiles):
                 instrs.append(
-                    enc(OP_LOAD_W, ddr3_addr=weight_tile_addr[(ki, ni)], byte_count=14 * ARRAY)
+                    enc(
+                        OP_LOAD_W,
+                        ddr3_addr=weight_tile_addr[(ki, ni)],
+                        byte_count=14 * ARRAY,
+                    )
                 )
                 if ki == 0:
                     instrs.append(
-                        enc(OP_LOAD_B, ddr3_addr=bias_tile_addr[ni], byte_count=ARRAY * 4)
+                        enc(
+                            OP_LOAD_B,
+                            ddr3_addr=bias_tile_addr[ni],
+                            byte_count=ARRAY * 4,
+                        )
                     )
                 instrs.append(
-                    enc(OP_LOAD_ACT, ddr3_addr=act_tile_addr[(mi, ki)], byte_count=ms * ARRAY)
+                    enc(
+                        OP_LOAD_ACT,
+                        ddr3_addr=act_tile_addr[(mi, ki)],
+                        byte_count=ms * ARRAY,
+                    )
                 )
                 instrs.append(
                     enc(OP_MATMUL, acc_mode=(0 if ki == 0 else 1), tile_params=ms)
                 )
             instrs.append(
-                enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
-                    byte_count=0, tile_params=ms)
+                enc(
+                    OP_ACTIVATE,
+                    target=ACT_PASSTHROUGH,
+                    ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+                    byte_count=0,
+                    tile_params=ms,
+                )
             )
             instrs.append(enc(OP_STORE, ddr3_addr=oaddr, byte_count=ms * ARRAY))
 

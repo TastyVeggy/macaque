@@ -6,7 +6,7 @@ package npu_pkg;
   parameter int UART_BAUD_DEFAULT = 115_200;
 
   parameter int MIG_MEMCLK_FREQ = 333_333_333;
-  parameter int MIG_PHY_RATIO   = 4;
+  parameter int MIG_PHY_RATIO = 4;
   parameter int MIG_UI_CLK_FREQ = MIG_MEMCLK_FREQ / MIG_PHY_RATIO;
 
   // In systolic array
@@ -29,7 +29,7 @@ package npu_pkg;
 
   // Bytes per lane-packed buffer row (canonical DDR3 <-> buffer layout).
   parameter int INT8_ROW_BYTES = ARRAY_SIZE * (DTYPE_WEIGHT_W / 8);  // 14 (weight/act/quant)
-  parameter int INT32_ROW_BYTES = ARRAY_SIZE * (DTYPE_BIAS_W / 8);   // 56 (bias/out/acc)
+  parameter int INT32_ROW_BYTES = ARRAY_SIZE * (DTYPE_BIAS_W / 8);  // 56 (bias/out/acc)
 
   // BRAM
   parameter int DTYPE_BRAM_ADDR_W = $clog2(BRAM_DEPTH);
@@ -75,13 +75,13 @@ package npu_pkg;
   // For OP_MATMUL use the NAMED view decode_mat_instr()/mat_instr_t, and for
   // OP_ACTIVATE use decode_act_instr()/act_instr_t, below.
   typedef struct packed {
-    opcode_t                        opcode;
-    logic                           acc_mode;
-    logic [ISA_TARGET_W-1:0]        target;
-    logic [ISA_DDR_ADDR_W-1:0]      ddr3_addr;
-    logic [ISA_BYTE_CNT_W-1:0]      byte_count;
-    logic [ISA_RESERVED_W-1:0] reserved;
-    logic [ISA_TILE_PARAMS_W-1:0]   tile_params;
+    opcode_t                      opcode;
+    logic                         acc_mode;
+    logic [ISA_TARGET_W-1:0]      target;
+    logic [ISA_DDR_ADDR_W-1:0]    ddr3_addr;
+    logic [ISA_BYTE_CNT_W-1:0]    byte_count;
+    logic [ISA_RESERVED_W-1:0]    reserved;
+    logic [ISA_TILE_PARAMS_W-1:0] tile_params;
   } decoded_instr_t;
 
   function automatic decoded_instr_t decode_instr(logic [63:0] raw);
@@ -98,15 +98,15 @@ package npu_pkg;
 
   // Named view of a MATMUL instruction.
   typedef struct packed {
-    opcode_t     opcode;        // [63:60]
-    logic        acc_mode;      // [59] K-tile accumulate flag
-    logic [1:0]  reserved2;     // [58:57] (target[2:1])
-    logic        weight_hold;   // [56]    (target[0])
-    logic [19:0] reserved3;     // [55:36] (ddr3_addr[27:8])
-    logic [7:0]  mat_row_base;  // [35:28] (ddr3_addr[7:0])
-    logic [15:0] reserved;      // [27:12] (byte_count)
-    logic [ISA_RESERVED_W-1:0] reserved4;   // [11:8] (reserved)
-    logic [ISA_TILE_PARAMS_W-1:0]   tile_params; // [7:0] (tile_params)
+    opcode_t                      opcode;        // [63:60]
+    logic                         acc_mode;      // [59] K-tile accumulate flag
+    logic [1:0]                   reserved2;     // [58:57] (target[2:1])
+    logic                         weight_hold;   // [56]    (target[0])
+    logic [19:0]                  reserved3;     // [55:36] (ddr3_addr[27:8])
+    logic [7:0]                   mat_row_base;  // [35:28] (ddr3_addr[7:0])
+    logic [15:0]                  reserved;      // [27:12] (byte_count)
+    logic [ISA_RESERVED_W-1:0]    reserved4;     // [11:8] (reserved)
+    logic [ISA_TILE_PARAMS_W-1:0] tile_params;   // [7:0] (tile_params)
   } mat_instr_t;
 
   function automatic mat_instr_t decode_mat_instr(logic [63:0] raw);
@@ -134,16 +134,16 @@ package npu_pkg;
 
   // Named view of an ACTIVATE instruction.
   typedef struct packed {
-    opcode_t     opcode;           // [63:60]
-    logic        acc_mode;         // [59] (unused by ACTIVATE)
-    act_func_t   act_func;         // [58:56] (target)
-    logic [16:0] act_scale_m;      // [55:39] (ddr3_addr[27:11])
+    opcode_t opcode;  // [63:60]
+    logic acc_mode;  // [59] (unused by ACTIVATE)
+    act_func_t act_func;  // [58:56] (target)
+    logic [16:0] act_scale_m;  // [55:39] (ddr3_addr[27:11])
     logic [12:0] act_reserved;     // [38:26] (ddr3_addr[10:0], byte_count[15:14]) - spare, TODO: leaky relu shift
-    logic        act_bank_hold;    // [25]    (byte_count[13])
-    logic [7:0]  act_row_base;     // [24:17] (byte_count[12:5])
-    logic [4:0]  act_scale_shift;  // [16:12] (byte_count[4:0])
-    logic [ISA_RESERVED_W-1:0] reserved;    // [11:8] (reserved)
-    logic [ISA_TILE_PARAMS_W-1:0]   act_num_rows; // (tile_params)
+    logic act_bank_hold;  // [25]    (byte_count[13])
+    logic [7:0] act_row_base;  // [24:17] (byte_count[12:5])
+    logic [4:0] act_scale_shift;  // [16:12] (byte_count[4:0])
+    logic [ISA_RESERVED_W-1:0] reserved;  // [11:8] (reserved)
+    logic [ISA_TILE_PARAMS_W-1:0] act_num_rows;  // (tile_params)
   } act_instr_t;
 
   function automatic act_instr_t decode_act_instr(logic [63:0] raw);
@@ -151,7 +151,7 @@ package npu_pkg;
     a.opcode          = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
     a.acc_mode        = raw[ISA_ACC_MODE_B];
     a.act_func        = act_func_t'(raw[ISA_TARGET_H:ISA_TARGET_L]);
-    a.act_scale_m     = raw[ISA_DDR_ADDR_H-:17];     // [55:39]
+    a.act_scale_m     = raw[ISA_DDR_ADDR_H-:17];  // [55:39]
     a.act_reserved    = raw[ISA_DDR_ADDR_H-17-:13];  // [38:26]
     a.act_bank_hold   = raw[ISA_BYTE_CNT_H-2];
     a.act_row_base    = raw[ISA_BYTE_CNT_H-3-:8];
@@ -163,22 +163,22 @@ package npu_pkg;
 
   // Control register map
   // Byte offsets from REG_BASE, 64-bit registers
-  parameter logic [31:0] REG_BASE         = 32'h4000_0000;
-  parameter logic [ 7:0] REG_CTRL         = 8'h00;
-  parameter logic [ 7:0] REG_STATUS       = 8'h08;
-  parameter logic [ 7:0] REG_INSTR_ADDR   = 8'h10;
-  parameter logic [ 7:0] REG_INSTR_LEN    = 8'h18;
-  parameter logic [ 7:0] REG_PMU_CTRL     = 8'h20;
-  parameter logic [ 7:0] REG_PMU_CYCLES   = 8'h28;
-  parameter logic [ 7:0] REG_PMU_COMPUTE  = 8'h30;
-  parameter logic [ 7:0] REG_PMU_STALL    = 8'h38;
-  parameter logic [ 7:0] REG_PMU_DMA_BYTES_RD = 8'h40;
-  parameter logic [ 7:0] REG_PMU_DMA_BYTES_WR = 8'h48;
+  parameter logic [31:0] REG_BASE = 32'h4000_0000;
+  parameter logic [7:0] REG_CTRL = 8'h00;
+  parameter logic [7:0] REG_STATUS = 8'h08;
+  parameter logic [7:0] REG_INSTR_ADDR = 8'h10;
+  parameter logic [7:0] REG_INSTR_LEN = 8'h18;
+  parameter logic [7:0] REG_PMU_CTRL = 8'h20;
+  parameter logic [7:0] REG_PMU_CYCLES = 8'h28;
+  parameter logic [7:0] REG_PMU_COMPUTE = 8'h30;
+  parameter logic [7:0] REG_PMU_STALL = 8'h38;
+  parameter logic [7:0] REG_PMU_DMA_BYTES_RD = 8'h40;
+  parameter logic [7:0] REG_PMU_DMA_BYTES_WR = 8'h48;
 
   // Instruction memory
-  parameter int          IMEM_DEPTH   = 4096;
-  parameter int          IMEM_ADDR_W  = $clog2(IMEM_DEPTH);  // word index width
-  parameter logic [31:0] IMEM_BASE    = 32'h5000_0000;
+  parameter int IMEM_DEPTH = 4096;
+  parameter int IMEM_ADDR_W = $clog2(IMEM_DEPTH);  // word index width
+  parameter logic [31:0] IMEM_BASE = 32'h5000_0000;
 
   // Dual-lane sequencer: per-bank slot state for dep_tracker
   typedef enum logic [1:0] {

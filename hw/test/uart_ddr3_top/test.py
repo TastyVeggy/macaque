@@ -49,10 +49,15 @@ def main():
     ap = argparse.ArgumentParser(description="DDR3 UART read/write self-test")
     ap.add_argument("port", help="serial device, e.g. /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--read", type=lambda x: int(x, 0), default=None,
-                    help="single address to read (hex ok) instead of self-test")
-    ap.add_argument("--write-only", action="store_true",
-                    help="skip read-back verification")
+    ap.add_argument(
+        "--read",
+        type=lambda x: int(x, 0),
+        default=None,
+        help="single address to read (hex ok) instead of self-test",
+    )
+    ap.add_argument(
+        "--write-only", action="store_true", help="skip read-back verification"
+    )
     args = ap.parse_args()
 
     port = serial.Serial(args.port, args.baud, timeout=2.0)
@@ -81,9 +86,11 @@ def main():
             continue
         got = read64(port, addr)
         ok = got == val
-        fails += (not ok)
-        print(f"0x{addr:08x}: wrote 0x{val:016x}  read 0x{got:016x}  "
-              f"{'OK' if ok else 'MISMATCH'}")
+        fails += not ok
+        print(
+            f"0x{addr:08x}: wrote 0x{val:016x}  read 0x{got:016x}  "
+            f"{'OK' if ok else 'MISMATCH'}"
+        )
 
     if args.write_only:
         print("write-only done (no verification)")

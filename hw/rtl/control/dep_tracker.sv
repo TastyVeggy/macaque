@@ -48,11 +48,11 @@ module dep_tracker (
   assign bias_rdy            = comp_weight_hold
       ? 1'b1
       : (bias_slot[~comp_bias_bank_sel] == npu_pkg::SLOT_LOADED);
-  assign act_rdy             = (act_slot[~comp_act_bank_sel] == npu_pkg::SLOT_LOADED);
+  assign act_rdy = (act_slot[~comp_act_bank_sel] == npu_pkg::SLOT_LOADED);
 
   assign dma_weight_can_load = (weight_slot[~comp_weight_bank_sel] == npu_pkg::SLOT_EMPTY);
-  assign dma_bias_can_load   = (bias_slot[~comp_bias_bank_sel] == npu_pkg::SLOT_EMPTY);
-  assign dma_act_can_load    = (act_slot[~comp_act_bank_sel] == npu_pkg::SLOT_EMPTY);
+  assign dma_bias_can_load = (bias_slot[~comp_bias_bank_sel] == npu_pkg::SLOT_EMPTY);
+  assign dma_act_can_load = (act_slot[~comp_act_bank_sel] == npu_pkg::SLOT_EMPTY);
 
   // release when both lanes reached SYNC
   logic sync_dma, sync_comp;

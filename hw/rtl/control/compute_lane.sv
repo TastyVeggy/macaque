@@ -108,16 +108,16 @@ module compute_lane (
     HALT
   } state_t;
 
-  state_t                                  state;
+  state_t                                               state;
 
-  logic   [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] wl_count;
-  logic   [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] al_count;
-  logic                                    drain_done;
+  logic                [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] wl_count;
+  logic                [npu_pkg::DTYPE_BRAM_ADDR_W-1:0] al_count;
+  logic                                                 drain_done;
 
   // Latched instruction fields consumed after the FIFO pop.
-  logic   [                          11:0] cur_tile_params;
-  logic                                    cur_acc_mode;
-  npu_pkg::bram_addr_t                     cur_mat_row_base;
+  logic                [                          11:0] cur_tile_params;
+  logic                                                 cur_acc_mode;
+  npu_pkg::bram_addr_t                                  cur_mat_row_base;
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -340,7 +340,7 @@ module compute_lane (
     end
   end
 
-  assign busy = busy_r || !fifo_empty;
+  assign busy  = busy_r || !fifo_empty;
 
   assign stall = (state == MATMUL_WAIT) || (state == STORE_WAIT) || (state == SYNC_WAIT);
 

@@ -20,13 +20,13 @@ module instr_queue #(
 
   logic [CW-1:0] head;
   logic [CW-1:0] tail;
-  logic [  63:0] mem  [DEPTH];
+  logic [63:0] mem[DEPTH];
 
   logic [CW-1:0] count;
-  assign count     = tail - head;
-  assign full      = (count == CW'(DEPTH));
-  assign empty     = (count == 0);
-  assign pop_data  = mem[head[AW-1:0]];
+  assign count    = tail - head;
+  assign full     = (count == CW'(DEPTH));
+  assign empty    = (count == 0);
+  assign pop_data = mem[head[AW-1:0]];
 
   always_ff @(posedge clk) begin
     if (rst) begin

@@ -16,4 +16,4 @@ using Weight = int8_t;
 using Activation = int8_t;
 using Accum = int32_t;
 
-}  // namespace macaque::common
+} // namespace macaque::common

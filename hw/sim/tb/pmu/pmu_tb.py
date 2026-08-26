@@ -42,13 +42,17 @@ async def test_pmu_counts_cycles_when_active(dut):
     dut.mac_active.value = 1
     await RisingEdge(dut.clk)
     await ClockCycles(dut.clk, 5)
-    assert int(dut.pmu_compute.value) == 5, f"pmu_compute: expected 5, got {int(dut.pmu_compute.value)}"
+    assert int(dut.pmu_compute.value) == 5, (
+        f"pmu_compute: expected 5, got {int(dut.pmu_compute.value)}"
+    )
 
     dut.mac_active.value = 0
     dut.stall.value = 1
     await RisingEdge(dut.clk)
     await ClockCycles(dut.clk, 3)
-    assert int(dut.pmu_stall.value) == 3, f"pmu_stall: expected 3, got {int(dut.pmu_stall.value)}"
+    assert int(dut.pmu_stall.value) == 3, (
+        f"pmu_stall: expected 3, got {int(dut.pmu_stall.value)}"
+    )
 
 
 @cocotb.test()
@@ -89,7 +93,9 @@ async def test_pmu_frozen_holds(dut):
     dut.frozen.value = 1
     await RisingEdge(dut.clk)
     delta = await stable_cycles(dut, 5)
-    assert delta == 0, f"pmu_cycles changed by {delta} while frozen (was {val}, now {int(dut.pmu_cycles.value)})"
+    assert delta == 0, (
+        f"pmu_cycles changed by {delta} while frozen (was {val}, now {int(dut.pmu_cycles.value)})"
+    )
 
 
 @cocotb.test()

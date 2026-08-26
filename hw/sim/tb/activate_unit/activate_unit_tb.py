@@ -7,19 +7,19 @@ ARRAY_SIZE = 14
 
 def golden_requantize(acc, m, shift, func):
     """Bit-match the activate_unit RTL. Bias is ALREADY in `acc`
-       (the array seeds accumulators with bias), so ACTIVATE is pure requantize:
-       scaled = acc*M (+ round-half-up), requant = scaled >>> shift (arith),
-       func: 0=ReLU, 1=leaky-ReLU (alpha=1/16), 2=passthrough, clamp to [-128,127].
+    (the array seeds accumulators with bias), so ACTIVATE is pure requantize:
+    scaled = acc*M (+ round-half-up), requant = scaled >>> shift (arith),
+    func: 0=ReLU, 1=leaky-ReLU (alpha=1/16), 2=passthrough, clamp to [-128,127].
     """
     scaled = acc * m
     if shift > 0:
         scaled += 1 << (shift - 1)
     requant = scaled >> shift
-    if func == 0:                        # ReLU
+    if func == 0:  # ReLU
         act = max(0, requant)
-    elif func == 1:                      # leaky-ReLU, alpha = 1/16
+    elif func == 1:  # leaky-ReLU, alpha = 1/16
         act = requant if requant >= 0 else requant >> 4
-    else:                                # passthrough
+    else:  # passthrough
         act = requant
     return max(-128, min(127, act))
 
@@ -45,9 +45,10 @@ async def reset(dut):
 
 def start_bram_model(dut, ob_data):
     """Model the registered BRAM read exactly like bram_sdp / out_buffer:
-       rdata(cycle N+1) = mem[raddr(cycle N)],. Reads the CURRENT ob_data dict
-       (shared, updated by run_case) so one task serves all cases.
+    rdata(cycle N+1) = mem[raddr(cycle N)],. Reads the CURRENT ob_data dict
+    (shared, updated by run_case) so one task serves all cases.
     """
+
     async def drive():
         pending = None
         while True:
@@ -67,9 +68,9 @@ def start_bram_model(dut, ob_data):
 
 async def run_case(dut, ob_rows, m, shift, func, num_rows):
     """ob_rows: list of `num_rows` rows, each 14 int32 lane values (the INT32
-       accumulator output, bias already included). Verifies EVERY written row
-       against the golden, using distinct per-row data so a misaligned/dropped/
-       shifted row would be caught.
+    accumulator output, bias already included). Verifies EVERY written row
+    against the golden, using distinct per-row data so a misaligned/dropped/
+    shifted row would be caught.
     """
     ob_data.clear()
     ob_data.update({r: ob_rows[r] for r in range(num_rows)})
@@ -94,7 +95,7 @@ async def run_case(dut, ob_rows, m, shift, func, num_rows):
 
     assert dut.done.value, "activate_unit never asserted done"
     assert sorted(out.keys()) == list(range(num_rows)), (
-        f"expected exactly rows 0..{num_rows-1} written, got {sorted(out.keys())}"
+        f"expected exactly rows 0..{num_rows - 1} written, got {sorted(out.keys())}"
     )
 
     for addr, lanes in out.items():
@@ -120,16 +121,16 @@ async def test_requantize_cases(dut):
 
     cases = [
         # (acc_base, M, shift, func, rows)   func 0=ReLU, 1=leaky, 2=passthrough
-        (100, 8192, 13, 0, 4),      # ~ x*1.0
-        (-100, 8192, 13, 0, 4),     # negatives → 0 (ReLU)
-        (-100, 8192, 13, 2, 4),     # negatives passthrough → preserved
-        (100, 8192, 13, 2, 4),      # positives passthrough → preserved
-        (-100, 8192, 13, 1, 4),     # negatives leaky → x>>4 (alpha=1/16)
-        (100, 8192, 13, 1, 4),      # positives leaky → unchanged
-        (32768, 8192, 13, 0, 4),    # big positive → clamps to 127
-        (123, 16384, 13, 0, 2),     # ~ x*2.0 → clamp
-        (50, 1, 0, 0, 2),           # shift 0
-        (255, 128, 7, 0, 4),        # (x*128 + 64) >> 7
+        (100, 8192, 13, 0, 4),  # ~ x*1.0
+        (-100, 8192, 13, 0, 4),  # negatives → 0 (ReLU)
+        (-100, 8192, 13, 2, 4),  # negatives passthrough → preserved
+        (100, 8192, 13, 2, 4),  # positives passthrough → preserved
+        (-100, 8192, 13, 1, 4),  # negatives leaky → x>>4 (alpha=1/16)
+        (100, 8192, 13, 1, 4),  # positives leaky → unchanged
+        (32768, 8192, 13, 0, 4),  # big positive → clamps to 127
+        (123, 16384, 13, 0, 2),  # ~ x*2.0 → clamp
+        (50, 1, 0, 0, 2),  # shift 0
+        (255, 128, 7, 0, 4),  # (x*128 + 64) >> 7
     ]
 
     for acc_base, m, shift, func, rows in cases:

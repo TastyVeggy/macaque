@@ -21,24 +21,24 @@ TEST(requantizeAndActivate, BitMatchVectors) {
   EXPECT_EQ(requantizeAndActivate(-100, 8192, 13, ActFunc::Passthrough), -100);
   EXPECT_EQ(requantizeAndActivate(100, 8192, 13, ActFunc::Passthrough), 100);
   EXPECT_EQ(requantizeAndActivate(-100, 8192, 13, ActFunc::LeakyRelu),
-            -7);  // -100 >> 4
+            -7); // -100 >> 4
   EXPECT_EQ(requantizeAndActivate(100, 8192, 13, ActFunc::LeakyRelu),
-            100);  // positives unchanged
+            100); // positives unchanged
   EXPECT_EQ(requantizeAndActivate(32768, 8192, 13, ActFunc::Relu), 127);
   EXPECT_EQ(requantizeAndActivate(-40000, 8192, 13, ActFunc::Relu), 0);
   EXPECT_EQ(requantizeAndActivate(123, 16384, 13, ActFunc::Relu), 127);
-  EXPECT_EQ(requantizeAndActivate(1, 3, 1, ActFunc::Relu), 2);  // round-half-up
+  EXPECT_EQ(requantizeAndActivate(1, 3, 1, ActFunc::Relu), 2); // round-half-up
   EXPECT_EQ(requantizeAndActivate(255, 128, 7, ActFunc::Relu), 127);
 }
 
 TEST(requantizeAndActivate, LeakyMatchesArithmeticShift) {
   EXPECT_EQ(requantizeAndActivate(-16, 8192, 13, ActFunc::LeakyRelu), -1);
   EXPECT_EQ(requantizeAndActivate(-1, 8192, 13, ActFunc::LeakyRelu),
-            -1);  // -1 >> 4 = -1
+            -1); // -1 >> 4 = -1
   EXPECT_EQ(requantizeAndActivate(-128, 8192, 13, ActFunc::LeakyRelu),
-            -8);  // -128 >> 4
+            -8); // -128 >> 4
   EXPECT_EQ(requantizeAndActivate(-1600, 8192, 13, ActFunc::LeakyRelu),
-            -100);  // -1600 >> 4
+            -100); // -1600 >> 4
 }
 
 TEST(requantizeAndActivate, BiasMatchesActivate) {
@@ -85,8 +85,7 @@ TEST(Engine, LoadMatmulActivateStore) {
                            static_cast<uint16_t>(kByteCount),
                            0,
                            0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0,
-                           0};
+  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0, 0};
   const Instruction load_a{Opcode::LoadInput,
                            false,
                            0,
@@ -96,19 +95,19 @@ TEST(Engine, LoadMatmulActivateStore) {
                            0};
   const Instruction mm{
       Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
-  const Instruction act{Opcode::Activate,
-                        false,
-                        static_cast<uint8_t>(ActFunc::Relu),
-                        kM << 11,
-                        kShift,
-                        0,
-                        static_cast<uint8_t>(kArraySize)};
-  const Instruction store{
-      Opcode::Store,    false, 0, kOutAddr,
-      static_cast<uint16_t>(kByteCount), 0, 0};
+  const Instruction act{
+      Opcode::Activate, false, static_cast<uint8_t>(ActFunc::Relu), kM << 11,
+      kShift,           0,     static_cast<uint8_t>(kArraySize)};
+  const Instruction store{Opcode::Store,
+                          false,
+                          0,
+                          kOutAddr,
+                          static_cast<uint16_t>(kByteCount),
+                          0,
+                          0};
 
   std::vector<uint64_t> program;
-  for (const Instruction& ins : {load_w, load_b, load_a, mm, act, store}) {
+  for (const Instruction &ins : {load_w, load_b, load_a, mm, act, store}) {
     program.push_back(ins.encode());
   }
 
@@ -133,15 +132,17 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
   const uint32_t kByteCount = kArraySize * kArraySize;
 
   std::vector<uint8_t> weights(kByteCount, 0);
-  for (int k = 0; k < kArraySize; ++k) weights[k * kArraySize + k] = 1;
+  for (int k = 0; k < kArraySize; ++k)
+    weights[k * kArraySize + k] = 1;
 
   std::vector<uint8_t> acts(kByteCount, 1);
 
   std::vector<uint8_t> biases(14 * 4, 0);
   for (int c = 0; c < kArraySize; ++c) {
     const int32_t b = 1000;
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(&b);  // little-endian
-    for (size_t j = 0; j < sizeof(int32_t); ++j) biases[c * 4 + j] = p[j];
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(&b); // little-endian
+    for (size_t j = 0; j < sizeof(int32_t); ++j)
+      biases[c * 4 + j] = p[j];
   }
 
   const uint32_t kM = 8192;
@@ -159,8 +160,7 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
                            static_cast<uint16_t>(kByteCount),
                            0,
                            0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0,
-                           0};
+  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0, 0};
   const Instruction load_a{Opcode::LoadInput,
                            false,
                            0,
@@ -170,19 +170,19 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
                            0};
   const Instruction mm{
       Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
-  const Instruction act{Opcode::Activate,
-                        false,
-                        static_cast<uint8_t>(ActFunc::Relu),
-                        kM << 11,
-                        kShift,
-                        0,
-                        static_cast<uint8_t>(kArraySize)};
-  const Instruction store{
-      Opcode::Store,    false, 0, kOutAddr,
-      static_cast<uint16_t>(kByteCount), 0, 0};
+  const Instruction act{
+      Opcode::Activate, false, static_cast<uint8_t>(ActFunc::Relu), kM << 11,
+      kShift,           0,     static_cast<uint8_t>(kArraySize)};
+  const Instruction store{Opcode::Store,
+                          false,
+                          0,
+                          kOutAddr,
+                          static_cast<uint16_t>(kByteCount),
+                          0,
+                          0};
 
   std::vector<uint64_t> program;
-  for (const Instruction& ins : {load_w, load_b, load_a, mm, act, store}) {
+  for (const Instruction &ins : {load_w, load_b, load_a, mm, act, store}) {
     program.push_back(ins.encode());
   }
 

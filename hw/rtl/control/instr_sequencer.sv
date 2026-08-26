@@ -38,15 +38,15 @@ module instr_sequencer (
     output logic                act_bank_hold,
 
     // LOAD/STORE: to DMA
-    output logic                  load_req,
-    output logic                  store_req,
-    output npu_pkg::buffer_type_t load_target,
-    output logic [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
-    output logic [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
-    output logic                  acc_mode,
-    output logic [11:0] tile_params,
-    input  logic                  load_done,
-    input  logic                  store_done,
+    output logic                                                load_req,
+    output logic                                                store_req,
+    output npu_pkg::buffer_type_t                               load_target,
+    output logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
+    output logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
+    output logic                                                acc_mode,
+    output logic                  [                       11:0] tile_params,
+    input  logic                                                load_done,
+    input  logic                                                store_done,
 
     // Buffer read control during MATMUL
     output logic                wb_re,
@@ -95,22 +95,22 @@ module instr_sequencer (
   npu_pkg::buffer_type_t dma_load_buf_type;
   logic                  dma_load_bank;
   logic sync_reached_dma, sync_release;
-  logic        dma_load_req;
-  npu_pkg::buffer_type_t dma_load_target;
-  logic [npu_pkg::ISA_DDR_ADDR_W-1:0] dma_ddr3_addr;
-  logic [npu_pkg::ISA_BYTE_CNT_W-1:0] dma_byte_count;
+  logic                                                dma_load_req;
+  npu_pkg::buffer_type_t                               dma_load_target;
+  logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] dma_ddr3_addr;
+  logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] dma_byte_count;
 
   // Compute lane
-  logic        comp_lane_busy;
-  logic        comp_lane_stall;
-  logic        comp_mac_active;
-  logic        comp_error;
+  logic                                                comp_lane_busy;
+  logic                                                comp_lane_stall;
+  logic                                                comp_mac_active;
+  logic                                                comp_error;
   logic comp_matmul_start_notify, comp_matmul_drain_notify;
-  logic comp_weight_hold;
-  logic        comp_store_req;
+  logic                               comp_weight_hold;
+  logic                               comp_store_req;
   logic [npu_pkg::ISA_DDR_ADDR_W-1:0] comp_ddr3_addr;
   logic [npu_pkg::ISA_BYTE_CNT_W-1:0] comp_byte_count;
-  logic        sync_reached_comp;
+  logic                               sync_reached_comp;
 
   // Bank selects: owned by DMA lane
   logic int_weight_bank_sel, int_act_bank_sel, int_bias_bank_sel;

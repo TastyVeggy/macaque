@@ -28,13 +28,13 @@ struct DdrRegionTotals {
 
 // Scans `block` for every macaque-bound tosa.matmul/tosa.rescale, computing
 // how many bytes each DDR3 region needs in total
-DdrRegionTotals sizeRegions(mlir::Block& block);
+DdrRegionTotals sizeRegions(mlir::Block &block);
 
 // DDR3 address allocator, in accordance with sw/docs/MEMORY_LAYOUT.md's
-// region layout 
+// region layout
 class DdrLayout {
- public:
-  explicit DdrLayout(const DdrRegionTotals& totals) {
+public:
+  explicit DdrLayout(const DdrRegionTotals &totals) {
     weight_next_ = kWeightBase;
     bias_next_ = detail::alignUp(weight_next_ + totals.weightsBytes);
     zero_bias_base_ = detail::alignUp(bias_next_ + totals.biasesBytes);
@@ -50,18 +50,21 @@ class DdrLayout {
   uint32_t allocateOutput(uint32_t bytes) { return bump(output_next_, bytes); }
 
   // Fixed, shared and not written by the running program itself.
-  // The runtime is responsible for staging it as zero, same as any other region.
+  // The runtime is responsible for staging it as zero, same as any other
+  // region.
   uint32_t zeroBiasAddr() const { return zero_bias_base_; }
 
   // Returns addrs[nTile][mChunk], densely packed within one ping-pong bank
-  llvm::SmallVector<llvm::SmallVector<uint32_t>> allocateScratch(
-      int64_t numNTiles, int64_t rows, int64_t numFlatChunks, int64_t elemBytes);
+  llvm::SmallVector<llvm::SmallVector<uint32_t>>
+  allocateScratch(int64_t numNTiles, int64_t rows, int64_t numFlatChunks,
+                  int64_t elemBytes);
 
-  // Records the real DDR3 bytes for a compile-time-known region. 
+  // Records the real DDR3 bytes for a compile-time-known region.
   // `bytes` is expected to already be zero-padded to that tile's full
-  // byte_count by the caller 
+  // byte_count by the caller
   void recordData(uint32_t addr, llvm::ArrayRef<uint8_t> bytes) {
-    data_.emplace_back(addr, llvm::SmallVector<uint8_t>(bytes.begin(), bytes.end()));
+    data_.emplace_back(addr,
+                       llvm::SmallVector<uint8_t>(bytes.begin(), bytes.end()));
   }
 
   llvm::ArrayRef<std::pair<uint32_t, llvm::SmallVector<uint8_t>>> data() const {
@@ -69,20 +72,28 @@ class DdrLayout {
   }
 
   // Records one tile of the runtime-provided input
-  void recordInputTile(uint32_t addr, uint32_t bytes) { input_.emplace_back(addr, bytes); }
-  void recordOutputTile(uint32_t addr, uint32_t bytes) { output_.emplace_back(addr, bytes); }
+  void recordInputTile(uint32_t addr, uint32_t bytes) {
+    input_.emplace_back(addr, bytes);
+  }
+  void recordOutputTile(uint32_t addr, uint32_t bytes) {
+    output_.emplace_back(addr, bytes);
+  }
   void setInputValidBytes(int64_t bytes) { input_valid_bytes_ = bytes; }
   void setOutputValidBytes(int64_t bytes) { output_valid_bytes_ = bytes; }
 
-  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> inputTiles() const { return input_; }
-  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> outputTiles() const { return output_; }
+  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> inputTiles() const {
+    return input_;
+  }
+  llvm::ArrayRef<std::pair<uint32_t, uint32_t>> outputTiles() const {
+    return output_;
+  }
   int64_t inputValidBytes() const { return input_valid_bytes_; }
   int64_t outputValidBytes() const { return output_valid_bytes_; }
 
- private:
+private:
   static constexpr uint32_t kWeightBase = 0x0000'1000;
 
-  static uint32_t bump(uint32_t& cursor, uint32_t bytes) {
+  static uint32_t bump(uint32_t &cursor, uint32_t bytes) {
     uint32_t addr = cursor;
     cursor = detail::alignUp(cursor + bytes);
     return addr;
@@ -103,4 +114,4 @@ class DdrLayout {
   int64_t output_valid_bytes_ = 0;
 };
 
-}  // namespace macaque::codegen::conversion
+} // namespace macaque::codegen::conversion

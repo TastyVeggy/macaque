@@ -3,13 +3,15 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 
-def encode_instr(opcode, acc_mode=0, target=0, ddr3_addr=0, byte_count=0, tile_params=0):
+def encode_instr(
+    opcode, acc_mode=0, target=0, ddr3_addr=0, byte_count=0, tile_params=0
+):
     word = (opcode & 0xF) << 60
     word |= (acc_mode & 1) << 59
     word |= (target & 0x7) << 56
     word |= (ddr3_addr & 0xFFFFFFF) << 28
     word |= (byte_count & 0xFFFF) << 12
-    word |= (tile_params & 0xFFF)
+    word |= tile_params & 0xFFF
     return word
 
 
@@ -54,6 +56,7 @@ def start_im_data_model(dut, program):
     Sampled post-NBA via ReadOnly so it matches the DUT's always_ff sampling,
     then presented on the NEXT timestep — no cocotb read/write race.
     """
+
     async def drive_im_data():
         while True:
             await RisingEdge(dut.clk)
@@ -111,7 +114,9 @@ async def test_sequencer_runs_sync_only(dut):
     await RisingEdge(dut.clk)
     dut.start.value = 0
 
-    assert await wait_for(dut, dut.done, 1, timeout=100), "SYNC program did not complete"
+    assert await wait_for(dut, dut.done, 1, timeout=100), (
+        "SYNC program did not complete"
+    )
 
 
 @cocotb.test()
@@ -151,9 +156,13 @@ async def test_matmul_fsm_sequence(dut):
     assert loads == [0x100, 0x110, 0x120], f"loads issued: {loads}"
 
     # --- WEIGHT_LOAD ---
-    assert await wait_for(dut, dut.wb_re, 1, timeout=100), "wb_re never asserted (dep_tracker may not be ready)"
+    assert await wait_for(dut, dut.wb_re, 1, timeout=100), (
+        "wb_re never asserted (dep_tracker may not be ready)"
+    )
 
-    assert await wait_for(dut, dut.matmul_start, 1, timeout=20), "matmul_start never pulsed"
+    assert await wait_for(dut, dut.matmul_start, 1, timeout=20), (
+        "matmul_start never pulsed"
+    )
     await RisingEdge(dut.clk)
     assert int(dut.matmul_start.value) == 0, "matmul_start not 1-cycle"
 
@@ -177,7 +186,9 @@ async def test_matmul_fsm_sequence(dut):
     dut.matmul_done.value = 0
 
     # 4-instruction program (3 loads + matmul): should reach done
-    assert await wait_for(dut, dut.done, 1, timeout=100), "program did not complete after drain"
+    assert await wait_for(dut, dut.done, 1, timeout=100), (
+        "program did not complete after drain"
+    )
 
 
 @cocotb.test()
@@ -229,7 +240,9 @@ async def test_dma_lane_overlap_prefetch(dut):
     dut.start.value = 0
 
     # MATMUL 1 enters ACT_FEED (weights already loaded by the DMA lane)
-    assert await wait_for(dut, dut.act_valid, 1, timeout=100), "MATMUL 1 never entered ACT_FEED"
+    assert await wait_for(dut, dut.act_valid, 1, timeout=100), (
+        "MATMUL 1 never entered ACT_FEED"
+    )
 
     # Keep matmul_done LOW so the compute lane stays busy with MATMUL 1.
     await ClockCycles(dut.clk, 10)
@@ -238,7 +251,9 @@ async def test_dma_lane_overlap_prefetch(dut):
     # The DMA lane must have issued tile-2's loads (0x200+) WHILE MATMUL 1
     # was in flight — that is the overlap.
     tile2_loads = [a for a in loads if a >= 0x200]
-    assert tile2_loads == [0x200, 0x210, 0x220], f"tile-2 loads during MATMUL 1: {loads}"
+    assert tile2_loads == [0x200, 0x210, 0x220], (
+        f"tile-2 loads during MATMUL 1: {loads}"
+    )
 
     # Now release the drain for MATMUL 1
     dut.matmul_done.value = 1
@@ -288,7 +303,9 @@ async def test_two_matmul_overlap(dut):
     dut.start.value = 0
 
     # First MATMUL's ACT_FEED
-    assert await wait_for(dut, dut.act_valid, 1, timeout=100), "first MATMUL never started"
+    assert await wait_for(dut, dut.act_valid, 1, timeout=100), (
+        "first MATMUL never started"
+    )
     while int(dut.act_valid.value) == 1:
         await RisingEdge(dut.clk)
 
@@ -298,7 +315,12 @@ async def test_two_matmul_overlap(dut):
     dut.matmul_done.value = 0
 
     # Second MATMUL's ACT_FEED
-    assert await wait_for(dut, dut.act_valid, 1, timeout=100, ), "second MATMUL never started"
+    assert await wait_for(
+        dut,
+        dut.act_valid,
+        1,
+        timeout=100,
+    ), "second MATMUL never started"
     while int(dut.act_valid.value) == 1:
         await RisingEdge(dut.clk)
 
@@ -307,7 +329,9 @@ async def test_two_matmul_overlap(dut):
     await ClockCycles(dut.clk, N)
     dut.matmul_done.value = 0
 
-    assert await wait_for(dut, dut.done, 1, timeout=100), "program did not complete after 2 matmuls"
+    assert await wait_for(dut, dut.done, 1, timeout=100), (
+        "program did not complete after 2 matmuls"
+    )
 
 
 @cocotb.test()

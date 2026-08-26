@@ -4,6 +4,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 
 DEPTH = 8
 
+
 async def reset(dut):
     dut.rst.value = 1
     dut.push.value = 0
@@ -24,7 +25,7 @@ async def push_val(dut, v):
 async def pop_val(dut):
     """Read the current head value, then pop it. Returns the popped value."""
     await ClockCycles(dut.clk, 1)  # settle so any prior pop's head advance is visible
-    v = int(dut.pop_data.value)    # mem[head]
+    v = int(dut.pop_data.value)  # mem[head]
     dut.pop.value = 1
     await RisingEdge(dut.clk)
     dut.pop.value = 0

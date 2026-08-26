@@ -17,4 +17,4 @@ namespace macaque::codegen::target {
 // op outside the macaque dialect's seven opcodes.
 mlir::FailureOr<std::vector<uint64_t>> emitBinary(mlir::Block &block);
 
-}  // namespace macaque::codegen::target
+} // namespace macaque::codegen::target

@@ -28,7 +28,7 @@ struct BinaryEmitterTest : public ::testing::Test {
   }
 };
 
-}  // namespace
+} // namespace
 
 TEST_F(BinaryEmitterTest, LoadWeightMatchesHandBuiltInstruction) {
   LoadWeightOp::create(*builder, loc, TypeRange{}, 0x123'4567u, 200);
@@ -37,14 +37,14 @@ TEST_F(BinaryEmitterTest, LoadWeightMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::LoadWeight, false, 0, 0x123'4567u,
-                             200, 0, 0};
+  isa::Instruction expected{
+      isa::Opcode::LoadWeight, false, 0, 0x123'4567u, 200, 0, 0};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
 TEST_F(BinaryEmitterTest, MatmulMatchesHandBuiltInstruction) {
   MatmulOp::create(*builder, loc, TypeRange{}, /*acc_mode=*/true,
-                    /*tile_params=*/14);
+                   /*tile_params=*/14);
 
   auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
@@ -56,15 +56,15 @@ TEST_F(BinaryEmitterTest, MatmulMatchesHandBuiltInstruction) {
 
 TEST_F(BinaryEmitterTest, ActivateMatchesHandBuiltInstruction) {
   ActivateOp::create(*builder, loc, TypeRange{}, /*act_func=*/1,
-                      /*act_scale_m=*/0x1ABCDu, /*act_scale_shift=*/9,
-                      /*act_num_rows=*/64);
+                     /*act_scale_m=*/0x1ABCDu, /*act_scale_shift=*/9,
+                     /*act_num_rows=*/64);
 
   auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Activate, false, 1,
-                             0x1ABCDu << 11, 9, 0, 64};
+  isa::Instruction expected{
+      isa::Opcode::Activate, false, 1, 0x1ABCDu << 11, 9, 0, 64};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
@@ -83,7 +83,7 @@ TEST_F(BinaryEmitterTest, EmitsWordsInProgramOrder) {
   LoadWeightOp::create(*builder, loc, TypeRange{}, 0x10u, 4);
   LoadInputOp::create(*builder, loc, TypeRange{}, 0x20u, 8);
   MatmulOp::create(*builder, loc, TypeRange{}, /*acc_mode=*/false,
-                    /*tile_params=*/4);
+                   /*tile_params=*/4);
   StoreOp::create(*builder, loc, TypeRange{}, 0x30u, 4);
 
   auto words = target::emitBinary(block);
@@ -96,13 +96,11 @@ TEST_F(BinaryEmitterTest, EmitsWordsInProgramOrder) {
             isa::Opcode::LoadInput);
   EXPECT_EQ((isa::Instruction::decode((*words)[2])).opcode,
             isa::Opcode::Matmul);
-  EXPECT_EQ((isa::Instruction::decode((*words)[3])).opcode,
-            isa::Opcode::Store);
+  EXPECT_EQ((isa::Instruction::decode((*words)[3])).opcode, isa::Opcode::Store);
 }
 
 TEST_F(BinaryEmitterTest, UnsupportedOpFailsEmission) {
-  UnrealizedConversionCastOp::create(*builder, loc, TypeRange{},
-                                      ValueRange{});
+  UnrealizedConversionCastOp::create(*builder, loc, TypeRange{}, ValueRange{});
 
   auto words = target::emitBinary(block);
   EXPECT_TRUE(failed(words));

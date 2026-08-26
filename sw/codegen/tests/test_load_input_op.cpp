@@ -14,8 +14,7 @@ TEST(LoadInputOp, MaxValidAddressVerifies) {
   OpBuilder builder(&context);
   Location loc = builder.getUnknownLoc();
 
-  auto op =
-      LoadInputOp::create(builder, loc, TypeRange{}, (1u << 28) - 1, 200);
+  auto op = LoadInputOp::create(builder, loc, TypeRange{}, (1u << 28) - 1, 200);
   EXPECT_TRUE(succeeded(verify(op)));
 }
 

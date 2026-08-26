@@ -10,7 +10,7 @@ REG_STATUS = REG_BASE + 0x08
 REG_INSTR_ADDR = REG_BASE + 0x10
 REG_INSTR_LEN = REG_BASE + 0x18
 REG_PMU_CTRL = REG_BASE + 0x20
-REG_PMU_CYCLES = REG_BASE + 0x28   # 64-bit
+REG_PMU_CYCLES = REG_BASE + 0x28  # 64-bit
 REG_PMU_COMPUTE = REG_BASE + 0x30
 REG_PMU_STALL = REG_BASE + 0x38
 REG_PMU_DMA_RD = REG_BASE + 0x40
@@ -77,9 +77,14 @@ def send_status(port):
 
 
 def enc(opcode, acc_mode=0, target=0, ddr3_addr=0, byte_count=0, tile_params=0):
-    return ((opcode & 0xF) << 60) | ((acc_mode & 1) << 59) | ((target & 0x7) << 56) \
-        | ((ddr3_addr & 0xFFFFFFF) << 28) | ((byte_count & 0xFFFF) << 12) \
+    return (
+        ((opcode & 0xF) << 60)
+        | ((acc_mode & 1) << 59)
+        | ((target & 0x7) << 56)
+        | ((ddr3_addr & 0xFFFFFFF) << 28)
+        | ((byte_count & 0xFFFF) << 12)
         | (tile_params & 0xFFF)
+    )
 
 
 def s8(v):
@@ -141,7 +146,9 @@ def align_up(addr, align=0x1000):
     return (addr + align - 1) // align * align
 
 
-def build(A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1, shift=0):
+def build(
+    A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1, shift=0
+):
     O = ref_matmul(A, W, M, K, N)
 
     M_tiles = make_tiles(M)
@@ -168,9 +175,9 @@ def build(A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1
     for ki, (ko, ks) in enumerate(K_tiles):
         for ni, (no, ns) in enumerate(N_tiles):
             rows = []
-            for kk in range(ARRAY):          # K row within tile
+            for kk in range(ARRAY):  # K row within tile
                 row = []
-                for nn in range(ARRAY):      # N col within tile
+                for nn in range(ARRAY):  # N col within tile
                     k = ko + kk
                     n = no + nn
                     row.append(s8(W[k][n]) if (k < K and n < N) else 0)
@@ -194,8 +201,8 @@ def build(A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1
     for mi, (mo, ms) in enumerate(M_tiles):
         for ki, (ko, ks) in enumerate(K_tiles):
             rows = []
-            for mm in range(ms):             # M row within tile
-                for kk in range(ARRAY):      # K lane within tile
+            for mm in range(ms):  # M row within tile
+                for kk in range(ARRAY):  # K lane within tile
                     k = ko + kk
                     rows.append(s8(A[mo + mm][k]) if (k < K) else 0)
             act_tile_addr[(mi, ki)] = aaddr
@@ -212,40 +219,70 @@ def build(A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1
         for mm in range(ms):
             for nn in range(ARRAY):
                 m, n = mo + mm, no + nn
-                exp.append(requantize_activate(O[m][n], mult, shift, act_func) if n < N else 0)
+                exp.append(
+                    requantize_activate(O[m][n], mult, shift, act_func) if n < N else 0
+                )
         out.append((oaddr, exp))
         oaddr += 200
 
     if hold and len(K_tiles) > 1:
         for ni, (no, ns) in enumerate(N_tiles):
             for batch_start in range(0, len(M_tiles), max_tiles_per_hold_batch):
-                batch = M_tiles[batch_start:batch_start + max_tiles_per_hold_batch]
+                batch = M_tiles[batch_start : batch_start + max_tiles_per_hold_batch]
                 for ki, (ko, ks) in enumerate(K_tiles):
                     for ci, (mo, ms) in enumerate(batch):
                         mi = batch_start + ci
                         held = ci > 0
                         row_base = ci * ARRAY
                         if not held:
-                            instrs.append(enc(OP_LOAD_W, ddr3_addr=weight_tile_addr[(ki, ni)],
-                                              byte_count=14 * ARRAY))
+                            instrs.append(
+                                enc(
+                                    OP_LOAD_W,
+                                    ddr3_addr=weight_tile_addr[(ki, ni)],
+                                    byte_count=14 * ARRAY,
+                                )
+                            )
                             if ki == 0:
-                                instrs.append(enc(OP_LOAD_B, ddr3_addr=bias_tile_addr[ni],
-                                                  byte_count=ARRAY * 4))
-                        instrs.append(enc(OP_LOAD_ACT, ddr3_addr=act_tile_addr[(mi, ki)],
-                                          byte_count=ms * ARRAY))
-                        instrs.append(enc(OP_MATMUL, acc_mode=(0 if ki == 0 else 1),
-                                          target=(MATMUL_WEIGHT_HOLD if held else 0),
-                                          ddr3_addr=row_base, tile_params=ms))
+                                instrs.append(
+                                    enc(
+                                        OP_LOAD_B,
+                                        ddr3_addr=bias_tile_addr[ni],
+                                        byte_count=ARRAY * 4,
+                                    )
+                                )
+                        instrs.append(
+                            enc(
+                                OP_LOAD_ACT,
+                                ddr3_addr=act_tile_addr[(mi, ki)],
+                                byte_count=ms * ARRAY,
+                            )
+                        )
+                        instrs.append(
+                            enc(
+                                OP_MATMUL,
+                                acc_mode=(0 if ki == 0 else 1),
+                                target=(MATMUL_WEIGHT_HOLD if held else 0),
+                                ddr3_addr=row_base,
+                                tile_params=ms,
+                            )
+                        )
                 # Drain the whole batch: one ACTIVATE+STORE per M-tile,
                 # bank_hold=1 on every chunk but the batch's last (which
                 # toggles out_bank_sel, same as an ordinary activate).
                 for ci, (mo, ms) in enumerate(batch):
                     mi = batch_start + ci
                     last = ci == len(batch) - 1
-                    instrs.append(enc(OP_ACTIVATE, target=act_func, ddr3_addr=mult,
-                                      byte_count=act_byte_count(shift, ci * ARRAY,
-                                                                bank_hold=0 if last else 1),
-                                      tile_params=ms))
+                    instrs.append(
+                        enc(
+                            OP_ACTIVATE,
+                            target=act_func,
+                            ddr3_addr=mult,
+                            byte_count=act_byte_count(
+                                shift, ci * ARRAY, bank_hold=0 if last else 1
+                            ),
+                            tile_params=ms,
+                        )
+                    )
                     emit_chunk_output(mi, mo, ms, no)
         return instrs, ddr, out
 
@@ -256,19 +293,45 @@ def build(A, W, M, K, N, use_weight_hold=False, act_func=ACT_PASSTHROUGH, mult=1
                 # is what makes this a held (reuse, no reload) M-chunk.
                 held = hold and mi > 0
                 if not held:
-                    instrs.append(enc(OP_LOAD_W, ddr3_addr=weight_tile_addr[(ki, ni)],
-                                      byte_count=14 * ARRAY))
+                    instrs.append(
+                        enc(
+                            OP_LOAD_W,
+                            ddr3_addr=weight_tile_addr[(ki, ni)],
+                            byte_count=14 * ARRAY,
+                        )
+                    )
                     if ki == 0:
-                        instrs.append(enc(OP_LOAD_B, ddr3_addr=bias_tile_addr[ni],
-                                          byte_count=ARRAY * 4))
-                instrs.append(enc(OP_LOAD_ACT, ddr3_addr=act_tile_addr[(mi, ki)],
-                                  byte_count=ms * ARRAY))
-                instrs.append(enc(OP_MATMUL, acc_mode=(0 if ki == 0 else 1),
-                                  target=(MATMUL_WEIGHT_HOLD if held else 0),
-                                  tile_params=ms))
-            instrs.append(enc(OP_ACTIVATE, target=act_func,
-                              ddr3_addr=mult, byte_count=act_byte_count(shift),
-                              tile_params=ms))
+                        instrs.append(
+                            enc(
+                                OP_LOAD_B,
+                                ddr3_addr=bias_tile_addr[ni],
+                                byte_count=ARRAY * 4,
+                            )
+                        )
+                instrs.append(
+                    enc(
+                        OP_LOAD_ACT,
+                        ddr3_addr=act_tile_addr[(mi, ki)],
+                        byte_count=ms * ARRAY,
+                    )
+                )
+                instrs.append(
+                    enc(
+                        OP_MATMUL,
+                        acc_mode=(0 if ki == 0 else 1),
+                        target=(MATMUL_WEIGHT_HOLD if held else 0),
+                        tile_params=ms,
+                    )
+                )
+            instrs.append(
+                enc(
+                    OP_ACTIVATE,
+                    target=act_func,
+                    ddr3_addr=mult,
+                    byte_count=act_byte_count(shift),
+                    tile_params=ms,
+                )
+            )
             emit_chunk_output(mi, mo, ms, no)
 
     return instrs, ddr, out
@@ -285,7 +348,7 @@ def stage_bytes(port, addr, byte_list):
     """Write a byte list to DDR3 in 8-byte little-endian chunks (zero padded)."""
     n = len(byte_list)
     for i in range(0, n, 8):
-        chunk = byte_list[i:i + 8]
+        chunk = byte_list[i : i + 8]
         chunk += [0] * (8 - len(chunk))
         val = 0
         for j, b in enumerate(chunk):
@@ -303,8 +366,10 @@ def run_program(port, name, instrs, ddr, verify):
     was built.
     """
     print(f"\n=== scenario: {name} ===")
-    print(f"{len(instrs)} instructions, {sum(len(d) for _, d in ddr)} bytes to "
-          f"stage, {sum(len(e) for _, e in verify)} output bytes to verify")
+    print(
+        f"{len(instrs)} instructions, {sum(len(d) for _, d in ddr)} bytes to "
+        f"stage, {sum(len(e) for _, e in verify)} output bytes to verify"
+    )
 
     t0 = time.time()
     # ---- stage weights / bias / activations into DDR3 ----
@@ -381,11 +446,16 @@ def run_program(port, name, instrs, ddr, verify):
     return fails == 0
 
 
-ACT_FUNC_NAMES = {ACT_RELU: "relu", ACT_LEAKY_RELU: "leaky_relu", ACT_PASSTHROUGH: "passthrough"}
+ACT_FUNC_NAMES = {
+    ACT_RELU: "relu",
+    ACT_LEAKY_RELU: "leaky_relu",
+    ACT_PASSTHROUGH: "passthrough",
+}
 
 
-def run_scenario(port, name, M, K, N, use_weight_hold=False, seed=0,
-                 act_func=ACT_PASSTHROUGH):
+def run_scenario(
+    port, name, M, K, N, use_weight_hold=False, seed=0, act_func=ACT_PASSTHROUGH
+):
     tags = []
     if use_weight_hold:
         tags.append("weight_hold")
@@ -394,8 +464,9 @@ def run_scenario(port, name, M, K, N, use_weight_hold=False, seed=0,
     tag_str = f", {', '.join(tags)}" if tags else ""
     label = f"{name} ({M}x{K} * {K}x{N}{tag_str})"
     A, W = gen_matrices(M, K, N, seed=seed)
-    instrs, ddr, out = build(A, W, M, K, N, use_weight_hold=use_weight_hold,
-                             act_func=act_func)
+    instrs, ddr, out = build(
+        A, W, M, K, N, use_weight_hold=use_weight_hold, act_func=act_func
+    )
     return run_program(port, label, instrs, ddr, out)
 
 
@@ -421,11 +492,13 @@ def build_chain(M, layers):
     """
     for i, layer in enumerate(layers):
         if i > 0:
-            assert layer["K"] == layers[i - 1]["N"], \
+            assert layer["K"] == layers[i - 1]["N"], (
                 f"layer {i}'s K must equal layer {i - 1}'s N (chained activation shape)"
+            )
         if i < len(layers) - 1:
-            assert layer["N"] <= ARRAY, \
+            assert layer["N"] <= ARRAY, (
                 f"layer {i} is non-final so its N must fit one tile (<= {ARRAY})"
+            )
 
     M_tiles = make_tiles(M)
 
@@ -504,18 +577,45 @@ def build_chain(M, layers):
                 for ki, (ko, ks) in enumerate(K_tiles):
                     held = hold and mi > 0
                     if not held:
-                        instrs.append(enc(OP_LOAD_W, ddr3_addr=weight_tile_addr[(ki, ni)],
-                                          byte_count=14 * ARRAY))
+                        instrs.append(
+                            enc(
+                                OP_LOAD_W,
+                                ddr3_addr=weight_tile_addr[(ki, ni)],
+                                byte_count=14 * ARRAY,
+                            )
+                        )
                         if ki == 0:
-                            instrs.append(enc(OP_LOAD_B, ddr3_addr=bias_tile_addr[ni],
-                                              byte_count=ARRAY * 4))
-                    instrs.append(enc(OP_LOAD_ACT, ddr3_addr=act_tile_addr[(mi, ki)],
-                                      byte_count=ms * ARRAY))
-                    instrs.append(enc(OP_MATMUL, acc_mode=(0 if ki == 0 else 1),
-                                      target=(MATMUL_WEIGHT_HOLD if held else 0),
-                                      tile_params=ms))
-                instrs.append(enc(OP_ACTIVATE, target=act_func, ddr3_addr=mult,
-                                  byte_count=shift, tile_params=ms))
+                            instrs.append(
+                                enc(
+                                    OP_LOAD_B,
+                                    ddr3_addr=bias_tile_addr[ni],
+                                    byte_count=ARRAY * 4,
+                                )
+                            )
+                    instrs.append(
+                        enc(
+                            OP_LOAD_ACT,
+                            ddr3_addr=act_tile_addr[(mi, ki)],
+                            byte_count=ms * ARRAY,
+                        )
+                    )
+                    instrs.append(
+                        enc(
+                            OP_MATMUL,
+                            acc_mode=(0 if ki == 0 else 1),
+                            target=(MATMUL_WEIGHT_HOLD if held else 0),
+                            tile_params=ms,
+                        )
+                    )
+                instrs.append(
+                    enc(
+                        OP_ACTIVATE,
+                        target=act_func,
+                        ddr3_addr=mult,
+                        byte_count=shift,
+                        tile_params=ms,
+                    )
+                )
                 addr = alloc(200)
                 if ni == 0:
                     store_addr[mi] = addr  # only N-tile 0 feeds a later layer
@@ -525,15 +625,20 @@ def build_chain(M, layers):
                 for mm in range(ms):
                     for nn in range(ARRAY):
                         m, n = mo + mm, no + nn
-                        exp.append(requantize_activate(O[m][n], mult, shift, act_func)
-                                  if n < N else 0)
+                        exp.append(
+                            requantize_activate(O[m][n], mult, shift, act_func)
+                            if n < N
+                            else 0
+                        )
                 verify.append((addr, exp))
 
         # Dense (unpadded) quantized output, exactly the bytes the next
         # layer's chained load_input will read back - this becomes that
         # layer's own reference `A`.
-        prev_A = [[requantize_activate(O[m][n], mult, shift, act_func) for n in range(N)]
-                 for m in range(M)]
+        prev_A = [
+            [requantize_activate(O[m][n], mult, shift, act_func) for n in range(N)]
+            for m in range(M)
+        ]
         prev_store_addr = store_addr
 
     return instrs, ddr, verify
@@ -553,7 +658,8 @@ def run_chain_scenario(port, name, M, layers):
 def main():
     ap = argparse.ArgumentParser(
         description="NPU matmul stress test: multi-tile K/M/N, weight-stationary "
-                     "M-streaming, ReLU/leaky-ReLU, and layer-to-layer chaining")
+        "M-streaming, ReLU/leaky-ReLU, and layer-to-layer chaining"
+    )
     ap.add_argument("port", help="serial device, e.g. /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
     args = ap.parse_args()
@@ -574,43 +680,70 @@ def main():
     # K<=14 (single K-tile), M spanning 4 M-tiles: exercises weight-stationary
     # M-streaming (MATMUL target[0]) - the actual hardware validation for
     # ROADMAP.md's "stream the M dim through each loaded weight tile" item.
-    ok &= run_scenario(port, "weight-hold M-streaming", HOLD_M, HOLD_K, HOLD_N,
-                       use_weight_hold=True, seed=1)
+    ok &= run_scenario(
+        port,
+        "weight-hold M-streaming",
+        HOLD_M,
+        HOLD_K,
+        HOLD_N,
+        use_weight_hold=True,
+        seed=1,
+    )
     # Weight-hold combined with K-tiling (K>14): weight reloaded once per
     # K-tile per hold-batch instead of once per (K-tile, M-tile) pair, and
     # M=270 spans 2 hold-batches, exercising the batch-boundary reload too.
-    ok &= run_scenario(port, "weight-hold + K-tiling", HOLD_KTILE_M, HOLD_KTILE_K,
-                       HOLD_KTILE_N, use_weight_hold=True, seed=10)
+    ok &= run_scenario(
+        port,
+        "weight-hold + K-tiling",
+        HOLD_KTILE_M,
+        HOLD_KTILE_K,
+        HOLD_KTILE_N,
+        use_weight_hold=True,
+        seed=10,
+    )
     # Isolated activation-function checks: same shape as the stress test
     # (so sums are large enough to actually clamp/clip), but ReLU and
     # leaky-ReLU instead of passthrough - neither was exercised on real
     # hardware before.
     ok &= run_scenario(port, "relu activation", 20, 30, 40, act_func=ACT_RELU, seed=2)
-    ok &= run_scenario(port, "leaky-relu activation", 20, 30, 40,
-                       act_func=ACT_LEAKY_RELU, seed=3)
+    ok &= run_scenario(
+        port, "leaky-relu activation", 20, 30, 40, act_func=ACT_LEAKY_RELU, seed=3
+    )
     # 3-layer chain, no hold: exercises Scratch A/B addressing on real
     # hardware (never tested there before) with a different activation
     # function at each layer and N-tiling on the final layer's output.
-    ok &= run_chain_scenario(port, "3-layer chain", 20, [
-        {"K": 14, "N": 14, "act_func": ACT_RELU, "seed": 4},
-        {"K": 14, "N": 10, "act_func": ACT_LEAKY_RELU, "seed": 5},
-        {"K": 10, "N": 28, "act_func": ACT_PASSTHROUGH, "seed": 6},
-    ])
+    ok &= run_chain_scenario(
+        port,
+        "3-layer chain",
+        20,
+        [
+            {"K": 14, "N": 14, "act_func": ACT_RELU, "seed": 4},
+            {"K": 14, "N": 10, "act_func": ACT_LEAKY_RELU, "seed": 5},
+            {"K": 10, "N": 28, "act_func": ACT_PASSTHROUGH, "seed": 6},
+        ],
+    )
     # Combined: weight-hold + chaining + every activation function together,
     # spanning 3 M-tiles (2 held reuses per layer) - closer to a real
     # workload than any single scenario above.
-    ok &= run_chain_scenario(port, "combined hold+chain+activations", 42, [
-        {"K": 10, "N": 14, "act_func": ACT_RELU, "hold": True, "seed": 7},
-        {"K": 14, "N": 12, "act_func": ACT_LEAKY_RELU, "hold": True, "seed": 8},
-        {"K": 12, "N": 25, "act_func": ACT_PASSTHROUGH, "hold": True, "seed": 9},
-    ])
+    ok &= run_chain_scenario(
+        port,
+        "combined hold+chain+activations",
+        42,
+        [
+            {"K": 10, "N": 14, "act_func": ACT_RELU, "hold": True, "seed": 7},
+            {"K": 14, "N": 12, "act_func": ACT_LEAKY_RELU, "hold": True, "seed": 8},
+            {"K": 12, "N": 25, "act_func": ACT_PASSTHROUGH, "hold": True, "seed": 9},
+        ],
+    )
 
     print("\n=== summary ===")
     for name, passed, fails in SCENARIO_RESULTS:
         status = "PASS" if passed else f"FAIL ({fails} mismatches)"
         print(f"  {status:20s} {name}")
     num_failed = sum(1 for _, passed, _ in SCENARIO_RESULTS if not passed)
-    print(f"{len(SCENARIO_RESULTS) - num_failed}/{len(SCENARIO_RESULTS)} scenarios passed")
+    print(
+        f"{len(SCENARIO_RESULTS) - num_failed}/{len(SCENARIO_RESULTS)} scenarios passed"
+    )
 
     sys.exit(0 if ok else 1)
 

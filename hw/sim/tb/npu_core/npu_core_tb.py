@@ -77,7 +77,9 @@ async def test_npu_core_halt_only(dut):
     # Poll for done
     for i in range(50):
         status = await reg_read(dut, REG_STATUS)
-        cocotb.log.info(f"Poll {i}: STATUS=0x{status:08X} (ready={bool(status&1)} busy={bool(status&2)} done={bool(status&4)})")
+        cocotb.log.info(
+            f"Poll {i}: STATUS=0x{status:08X} (ready={bool(status & 1)} busy={bool(status & 2)} done={bool(status & 4)})"
+        )
         if bool(status & 0x4):
             break
         await ClockCycles(dut.clk, 10)
@@ -133,49 +135,77 @@ def _dump_state(dut):
 
     seq = "seq_inst"
     cocotb.log.info("=== DEBUG STATE DUMP ===")
-    cocotb.log.info(f"fetch.state={sig(f'{seq}.fetch_inst.state')} "
-                    f"busy={sig(f'{seq}.fetch_inst.busy')} halt={sig(f'{seq}.fetch_inst.halt')} "
-                    f"pc={sig(f'{seq}.fetch_inst.pc')}")
-    cocotb.log.info(f"dma_lane.state={sig(f'{seq}.dma_inst.state')} "
-                    f"busy_r={sig(f'{seq}.dma_inst.busy_r')} fifo_empty={sig(f'{seq}.dma_fifo_empty')}")
-    cocotb.log.info(f"comp_lane.state={sig(f'{seq}.comp_inst.state')} "
-                    f"busy_r={sig(f'{seq}.comp_inst.busy_r')} fifo_empty={sig(f'{seq}.comp_fifo_empty')}")
-    cocotb.log.info(f"dma_fifo(full={sig(f'{seq}.dma_fifo_full')} empty={sig(f'{seq}.dma_fifo_empty')}) "
-                    f"comp_fifo(full={sig(f'{seq}.comp_fifo_full')} empty={sig(f'{seq}.comp_fifo_empty')})")
-    cocotb.log.info(f"dma_unit.eng={sig('dma_unit_inst.eng')} "
-                    f"adapter.state={sig('dma_unit_inst.u_adapter.state')} "
-                    f"beats_left={sig('dma_unit_inst.beats_left')}")
+    cocotb.log.info(
+        f"fetch.state={sig(f'{seq}.fetch_inst.state')} "
+        f"busy={sig(f'{seq}.fetch_inst.busy')} halt={sig(f'{seq}.fetch_inst.halt')} "
+        f"pc={sig(f'{seq}.fetch_inst.pc')}"
+    )
+    cocotb.log.info(
+        f"dma_lane.state={sig(f'{seq}.dma_inst.state')} "
+        f"busy_r={sig(f'{seq}.dma_inst.busy_r')} fifo_empty={sig(f'{seq}.dma_fifo_empty')}"
+    )
+    cocotb.log.info(
+        f"comp_lane.state={sig(f'{seq}.comp_inst.state')} "
+        f"busy_r={sig(f'{seq}.comp_inst.busy_r')} fifo_empty={sig(f'{seq}.comp_fifo_empty')}"
+    )
+    cocotb.log.info(
+        f"dma_fifo(full={sig(f'{seq}.dma_fifo_full')} empty={sig(f'{seq}.dma_fifo_empty')}) "
+        f"comp_fifo(full={sig(f'{seq}.comp_fifo_full')} empty={sig(f'{seq}.comp_fifo_empty')})"
+    )
+    cocotb.log.info(
+        f"dma_unit.eng={sig('dma_unit_inst.eng')} "
+        f"adapter.state={sig('dma_unit_inst.u_adapter.state')} "
+        f"beats_left={sig('dma_unit_inst.beats_left')}"
+    )
     ad = "dma_unit_inst.u_adapter"
-    cocotb.log.info(f"adapter: acc_fill={sig(f'{ad}.acc_fill')} "
-                    f"row_index={sig(f'{ad}.row_index')} "
-                    f"rows_total={sig(f'{ad}.load_rows_total')} "
-                    f"target={sig(f'{ad}.target')} row_size={sig(f'{ad}.row_size')} "
-                    f"read_pending={sig(f'{ad}.read_pending')} "
-                    f"store_rows_read={sig(f'{ad}.store_rows_read')}")
-    cocotb.log.info(f"dma_lane: issue_buf_type={sig(f'{seq}.dma_inst.issue_buf_type')} "
-                    f"issue_bank={sig(f'{seq}.dma_inst.issue_loaded_bank')} "
-                    f"load_req={sig(f'{seq}.dma_inst.load_req')}")
-    cocotb.log.info(f"dma_lane.byte_count={sig(f'{seq}.dma_inst.byte_count')} "
-                    f"ddr3_addr=0x{sig(f'{seq}.dma_inst.ddr3_addr'):x} "
-                    f"dma_unit.cur_addr=0x{sig('dma_unit_inst.cur_addr'):x}")
-    cocotb.log.info(f"dep: weight_slot={sig(f'{seq}.dep_tracker_inst.weight_slot')} "
-                    f"bias_slot={sig(f'{seq}.dep_tracker_inst.bias_slot')} "
-                    f"act_slot={sig(f'{seq}.dep_tracker_inst.act_slot')}")
-    cocotb.log.info(f"dep: weight_rdy={sig(f'{seq}.dep_tracker_inst.weight_rdy')} "
-                    f"bias_rdy={sig(f'{seq}.dep_tracker_inst.bias_rdy')} "
-                    f"act_rdy={sig(f'{seq}.dep_tracker_inst.act_rdy')}")
-    cocotb.log.info(f"dep: w_can_load={sig(f'{seq}.dep_tracker_inst.dma_weight_can_load')} "
-                    f"b_can_load={sig(f'{seq}.dep_tracker_inst.dma_bias_can_load')} "
-                    f"a_can_load={sig(f'{seq}.dep_tracker_inst.dma_act_can_load')}")
-    cocotb.log.info(f"bank_sel: w={sig(f'{seq}.weight_bank_sel')} a={sig(f'{seq}.act_bank_sel')} "
-                    f"b={sig(f'{seq}.bias_bank_sel')} out={sig(f'{seq}.out_bank_sel')} "
-                    f"q={sig(f'{seq}.quant_bank_sel')}")
-    cocotb.log.info(f"im_addr={sig(f'{seq}.im_addr')} im_data=0x{sig(f'{seq}.im_data'):x}"
-                    if sig(f'{seq}.im_data') != "??" else f"im_addr={sig(f'{seq}.im_addr')}")
+    cocotb.log.info(
+        f"adapter: acc_fill={sig(f'{ad}.acc_fill')} "
+        f"row_index={sig(f'{ad}.row_index')} "
+        f"rows_total={sig(f'{ad}.load_rows_total')} "
+        f"target={sig(f'{ad}.target')} row_size={sig(f'{ad}.row_size')} "
+        f"read_pending={sig(f'{ad}.read_pending')} "
+        f"store_rows_read={sig(f'{ad}.store_rows_read')}"
+    )
+    cocotb.log.info(
+        f"dma_lane: issue_buf_type={sig(f'{seq}.dma_inst.issue_buf_type')} "
+        f"issue_bank={sig(f'{seq}.dma_inst.issue_loaded_bank')} "
+        f"load_req={sig(f'{seq}.dma_inst.load_req')}"
+    )
+    cocotb.log.info(
+        f"dma_lane.byte_count={sig(f'{seq}.dma_inst.byte_count')} "
+        f"ddr3_addr=0x{sig(f'{seq}.dma_inst.ddr3_addr'):x} "
+        f"dma_unit.cur_addr=0x{sig('dma_unit_inst.cur_addr'):x}"
+    )
+    cocotb.log.info(
+        f"dep: weight_slot={sig(f'{seq}.dep_tracker_inst.weight_slot')} "
+        f"bias_slot={sig(f'{seq}.dep_tracker_inst.bias_slot')} "
+        f"act_slot={sig(f'{seq}.dep_tracker_inst.act_slot')}"
+    )
+    cocotb.log.info(
+        f"dep: weight_rdy={sig(f'{seq}.dep_tracker_inst.weight_rdy')} "
+        f"bias_rdy={sig(f'{seq}.dep_tracker_inst.bias_rdy')} "
+        f"act_rdy={sig(f'{seq}.dep_tracker_inst.act_rdy')}"
+    )
+    cocotb.log.info(
+        f"dep: w_can_load={sig(f'{seq}.dep_tracker_inst.dma_weight_can_load')} "
+        f"b_can_load={sig(f'{seq}.dep_tracker_inst.dma_bias_can_load')} "
+        f"a_can_load={sig(f'{seq}.dep_tracker_inst.dma_act_can_load')}"
+    )
+    cocotb.log.info(
+        f"bank_sel: w={sig(f'{seq}.weight_bank_sel')} a={sig(f'{seq}.act_bank_sel')} "
+        f"b={sig(f'{seq}.bias_bank_sel')} out={sig(f'{seq}.out_bank_sel')} "
+        f"q={sig(f'{seq}.quant_bank_sel')}"
+    )
+    cocotb.log.info(
+        f"im_addr={sig(f'{seq}.im_addr')} im_data=0x{sig(f'{seq}.im_data'):x}"
+        if sig(f"{seq}.im_data") != "??"
+        else f"im_addr={sig(f'{seq}.im_addr')}"
+    )
 
 
 async def _monitor(dut):
     import collections
+
     seq = "seq_inst"
     prev = {}
     cycle = 0
@@ -187,6 +217,7 @@ async def _monitor(dut):
                 return int(dut._id(p, extended=False).value)
             except Exception:
                 return None
+
         return {
             "eng": s("dma_unit_inst.eng"),
             "astate": s("dma_unit_inst.u_adapter.state"),
@@ -208,7 +239,9 @@ async def _monitor(dut):
             cur = snap()
             changes = [k for k in cur if cur[k] != prev.get(k)]
             if changes:
-                history.append(f"[{cycle}] " + " ".join(f"{k}={cur[k]}" for k in changes))
+                history.append(
+                    f"[{cycle}] " + " ".join(f"{k}={cur[k]}" for k in changes)
+                )
                 prev.update(cur)
     except Exception:
         pass
@@ -262,14 +295,26 @@ async def _run_matmul(dut, M, K, N, **build_kwargs):
         if M == 14 and N == 14:
             cocotb.log.info("=== got (row-major) ===")
             for r in range(len(exp) // 14):
-                cocotb.log.info("  got[" + str(r) + "] = " + " ".join(f"{x:4d}" for x in gs[r*14:(r+1)*14]))
+                cocotb.log.info(
+                    "  got["
+                    + str(r)
+                    + "] = "
+                    + " ".join(f"{x:4d}" for x in gs[r * 14 : (r + 1) * 14])
+                )
             cocotb.log.info("=== want ===")
             for r in range(len(exp) // 14):
-                cocotb.log.info("  want[" + str(r) + "] = " + " ".join(f"{x:4d}" for x in exp[r*14:(r+1)*14]))
+                cocotb.log.info(
+                    "  want["
+                    + str(r)
+                    + "] = "
+                    + " ".join(f"{x:4d}" for x in exp[r * 14 : (r + 1) * 14])
+                )
 
     for addr, idx, g, e in first_fails:
         row, col = idx // 14, idx % 14
-        cocotb.log.info(f"  MISMATCH addr=0x{addr:x} idx={idx} (r{row},c{col}) got={g} want={e}")
+        cocotb.log.info(
+            f"  MISMATCH addr=0x{addr:x} idx={idx} (r{row},c{col}) got={g} want={e}"
+        )
     assert fails == 0, f"matmul {M}x{K}x{N} failed with {fails} mismatches"
     cocotb.log.info(f"matmul {M}x{K}x{N} PASS")
 
@@ -358,21 +403,33 @@ async def test_matmul_weight_hold_m_streaming(dut):
         enc(OP_LOAD_B, ddr3_addr=B1_ADDR, byte_count=ARRAY * 4),
         enc(OP_LOAD_ACT, ddr3_addr=A0_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
+        enc(
+            OP_ACTIVATE,
+            target=ACT_PASSTHROUGH,
+            ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+            tile_params=ARRAY,
+        ),
         enc(OP_STORE, ddr3_addr=OUT0_ADDR, byte_count=ARRAY * ARRAY),
-
         # Held: reuse bank 1's already-loaded W1/B1, no LOAD_W/LOAD_B.
         enc(OP_LOAD_ACT, ddr3_addr=A1_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
+        enc(
+            OP_ACTIVATE,
+            target=ACT_PASSTHROUGH,
+            ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+            tile_params=ARRAY,
+        ),
         enc(OP_STORE, ddr3_addr=OUT1_ADDR, byte_count=ARRAY * ARRAY),
-
         # Held again, proving it's not just a one-shot bypass.
         enc(OP_LOAD_ACT, ddr3_addr=A2_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=1, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
+        enc(
+            OP_ACTIVATE,
+            target=ACT_PASSTHROUGH,
+            ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+            tile_params=ARRAY,
+        ),
         enc(OP_STORE, ddr3_addr=OUT2_ADDR, byte_count=ARRAY * ARRAY),
-
         # Drop the hold: fresh load into the never-touched bank 0, proving it
         # still accepts a real load correctly after sitting untouched through
         # the whole held sequence.
@@ -380,7 +437,12 @@ async def test_matmul_weight_hold_m_streaming(dut):
         enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4),
         enc(OP_LOAD_ACT, ddr3_addr=A3_ADDR, byte_count=ARRAY * ARRAY),
         enc(OP_MATMUL, acc_mode=0, target=0, tile_params=ARRAY),
-        enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT, tile_params=ARRAY),
+        enc(
+            OP_ACTIVATE,
+            target=ACT_PASSTHROUGH,
+            ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+            tile_params=ARRAY,
+        ),
         enc(OP_STORE, ddr3_addr=OUT3_ADDR, byte_count=ARRAY * ARRAY),
     ]
 
@@ -477,9 +539,11 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
         return [s8(Amat[m0 + m][k0 + k]) for m in range(ARRAY) for k in range(ARRAY)]
 
     W0_ADDR, W1T_ADDR, B_ADDR = 0x1000, 0x1200, 0x6000
-    A_ADDR = {(m, k): 0x8000 + 0x200 * (m * 2 + k) for m in range(M_CHUNKS) for k in range(2)}
+    A_ADDR = {
+        (m, k): 0x8000 + 0x200 * (m * 2 + k) for m in range(M_CHUNKS) for k in range(2)
+    }
     OUT_ADDR = {m: 0x10000 + 0x200 * m for m in range(M_CHUNKS)}
-    W2_ADDR, B2_ADDR, A_SANITY_ADDR, OUT_SANITY_ADDR = 0x1400, 0x6100, 0x8c00, 0x10600
+    W2_ADDR, B2_ADDR, A_SANITY_ADDR, OUT_SANITY_ADDR = 0x1400, 0x6100, 0x8C00, 0x10600
 
     for addr, data in [
         (W0_ADDR, weight_bytes(W1, 0)),
@@ -488,8 +552,11 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
         (W2_ADDR, weight_bytes(W2, 0)),
         (B2_ADDR, flatten_i32([0] * ARRAY)),
         (A_SANITY_ADDR, act_bytes(A_sanity, 0, 0)),
-    ] + [(A_ADDR[(m, k)], act_bytes(A, m * CHUNK, k * ARRAY))
-        for m in range(M_CHUNKS) for k in range(2)]:
+    ] + [
+        (A_ADDR[(m, k)], act_bytes(A, m * CHUNK, k * ARRAY))
+        for m in range(M_CHUNKS)
+        for k in range(2)
+    ]:
         ram.write_bytes(addr, data)
 
     def mat_row_base_addr(base):
@@ -502,25 +569,43 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
 
     instrs = []
     for k in range(2):
-        instrs.append(enc(OP_LOAD_W, ddr3_addr=(W0_ADDR if k == 0 else W1T_ADDR),
-                          byte_count=ARRAY * ARRAY))
+        instrs.append(
+            enc(
+                OP_LOAD_W,
+                ddr3_addr=(W0_ADDR if k == 0 else W1T_ADDR),
+                byte_count=ARRAY * ARRAY,
+            )
+        )
         if k == 0:
             instrs.append(enc(OP_LOAD_B, ddr3_addr=B_ADDR, byte_count=ARRAY * 4))
         for m in range(M_CHUNKS):
             held = m > 0
-            instrs.append(enc(OP_LOAD_ACT, ddr3_addr=A_ADDR[(m, k)], byte_count=ARRAY * ARRAY))
-            instrs.append(enc(OP_MATMUL, acc_mode=(0 if k == 0 else 1),
-                              target=(1 if held else 0),
-                              ddr3_addr=mat_row_base_addr(m * CHUNK),
-                              tile_params=ARRAY))
+            instrs.append(
+                enc(OP_LOAD_ACT, ddr3_addr=A_ADDR[(m, k)], byte_count=ARRAY * ARRAY)
+            )
+            instrs.append(
+                enc(
+                    OP_MATMUL,
+                    acc_mode=(0 if k == 0 else 1),
+                    target=(1 if held else 0),
+                    ddr3_addr=mat_row_base_addr(m * CHUNK),
+                    tile_params=ARRAY,
+                )
+            )
 
     for m in range(M_CHUNKS):
         last = m == M_CHUNKS - 1
         # ddr3_addr=1: ACTIVATE's ddr3_addr field is act_scale_m (passthrough
         # multiplier) - leaving it 0 multiplies every result by zero.
-        instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
-                          byte_count=act_byte_count(0, m * CHUNK, bank_hold=0 if last else 1),
-                          tile_params=ARRAY))
+        instrs.append(
+            enc(
+                OP_ACTIVATE,
+                target=ACT_PASSTHROUGH,
+                ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+                byte_count=act_byte_count(0, m * CHUNK, bank_hold=0 if last else 1),
+                tile_params=ARRAY,
+            )
+        )
         instrs.append(enc(OP_STORE, ddr3_addr=OUT_ADDR[m], byte_count=ARRAY * ARRAY))
 
     # Sanity matmul: ordinary, unheld, row_base=0 - proves the system is
@@ -530,8 +615,15 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
     instrs.append(enc(OP_LOAD_B, ddr3_addr=B2_ADDR, byte_count=ARRAY * 4))
     instrs.append(enc(OP_LOAD_ACT, ddr3_addr=A_SANITY_ADDR, byte_count=ARRAY * ARRAY))
     instrs.append(enc(OP_MATMUL, acc_mode=0, target=0, ddr3_addr=0, tile_params=ARRAY))
-    instrs.append(enc(OP_ACTIVATE, target=ACT_PASSTHROUGH, ddr3_addr=1 << ACT_SCALE_M_SHIFT,
-                      byte_count=act_byte_count(0, 0, bank_hold=0), tile_params=ARRAY))
+    instrs.append(
+        enc(
+            OP_ACTIVATE,
+            target=ACT_PASSTHROUGH,
+            ddr3_addr=1 << ACT_SCALE_M_SHIFT,
+            byte_count=act_byte_count(0, 0, bank_hold=0),
+            tile_params=ARRAY,
+        )
+    )
     instrs.append(enc(OP_STORE, ddr3_addr=OUT_SANITY_ADDR, byte_count=ARRAY * ARRAY))
 
     await _load_imem(dut, instrs)
@@ -571,7 +663,9 @@ async def test_matmul_weight_hold_with_k_tiling(dut):
         if g != e:
             fails += 1
             row, col = idx // ARRAY, idx % ARRAY
-            cocotb.log.info(f"  MISMATCH sanity idx={idx} (r{row},c{col}) got={g} want={e}")
+            cocotb.log.info(
+                f"  MISMATCH sanity idx={idx} (r{row},c{col}) got={g} want={e}"
+            )
 
     assert fails == 0, f"weight-hold+K-tiling failed with {fails} mismatches"
     cocotb.log.info("weight-hold+K-tiling PASS")

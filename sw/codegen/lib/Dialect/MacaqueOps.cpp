@@ -41,22 +41,20 @@ LogicalResult MatmulOp::verify() {
 
 LogicalResult ActivateOp::verify() {
   if (getActFunc() > 2)
-    return emitOpError(
-               "act_func must be 0 (ReLU), 1 (leaky-ReLU), or 2 "
-               "(passthrough), got ")
+    return emitOpError("act_func must be 0 (ReLU), 1 (leaky-ReLU), or 2 "
+                       "(passthrough), got ")
            << static_cast<unsigned>(getActFunc());
   if (getActScaleM() >= (1u << 17))
-    return emitOpError(
-               "act_scale_m must fit in 17 bits as it only occupies the top 17 of "
-               "ddr3_addr's 28 bits")
+    return emitOpError("act_scale_m must fit in 17 bits as it only occupies "
+                       "the top 17 of "
+                       "ddr3_addr's 28 bits")
            << getActScaleM();
   if (getActScaleShift() >= 32)
     return emitOpError("act_scale_shift must fit in 5 bits [0, 32), got ")
            << static_cast<unsigned>(getActScaleShift());
   if (getActRowBase() + getActNumRows() > 256)
-    return emitOpError(
-               "act_row_base + act_num_rows must fit the 256-row "
-               "out_buffer, got act_row_base=")
+    return emitOpError("act_row_base + act_num_rows must fit the 256-row "
+                       "out_buffer, got act_row_base=")
            << static_cast<unsigned>(getActRowBase())
            << " act_num_rows=" << static_cast<unsigned>(getActNumRows());
   return success();

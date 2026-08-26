@@ -60,7 +60,7 @@ async def test_rd_sel_feedback(dut):
     # With out_bank_sel=0: active bank = bank0, inactive = bank1.
     dut.out_bank_sel.value = 0
 
-    fb = await read_row(dut, rd_sel=1, addr=0)   # active -> bank0
+    fb = await read_row(dut, rd_sel=1, addr=0)  # active -> bank0
     act = await read_row(dut, rd_sel=0, addr=0)  # inactive -> bank1
 
     assert fb == bank0, f"rd_sel=1 (active) got {fb}, expected {bank0}"

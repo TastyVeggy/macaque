@@ -14,17 +14,21 @@ namespace {
 
 int64_t numNTilesFor(tosa::MatMulOp matmul) {
   auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
-  if (!bConst) return 1;
+  if (!bConst)
+    return 1;
   auto bType = cast<RankedTensorType>(bConst.getType());
-  if (bType.getRank() != 3) return 1;
+  if (bType.getRank() != 3)
+    return 1;
   return numTilesFor(bType.getShape()[2]);
 }
 
 int64_t numKTilesFor(tosa::MatMulOp matmul) {
   auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
-  if (!bConst) return 1;
+  if (!bConst)
+    return 1;
   auto bType = cast<RankedTensorType>(bConst.getType());
-  if (bType.getRank() != 3) return 1;
+  if (bType.getRank() != 3)
+    return 1;
   return numTilesFor(bType.getShape()[1]);
 }
 
@@ -36,7 +40,8 @@ int64_t numKTilesFor(tosa::MatMulOp matmul) {
 // address (same "every tile gets its own slot" rule as K/N-tiling - see
 // MEMORY_LAYOUT.md), so the total can come out slightly larger than
 // alignUp(fullRows * 14 * elemBytes) in one shot.
-uint32_t flatChunkedRowBytes(int64_t fullRows, int64_t numChunks, int64_t elemBytes) {
+uint32_t flatChunkedRowBytes(int64_t fullRows, int64_t numChunks,
+                             int64_t elemBytes) {
   uint32_t total = 0;
   for (int64_t m = 0; m < numChunks; m++) {
     const int64_t rows = numChunks > 1 ? flatChunkRows(fullRows, m) : fullRows;
@@ -63,11 +68,11 @@ uint32_t batchChunkedRowBytes(int64_t fullRows, int64_t elemBytes) {
   return total;
 }
 
-}  // namespace
+} // namespace
 
-DdrRegionTotals sizeRegions(Block& block) {
+DdrRegionTotals sizeRegions(Block &block) {
   DdrRegionTotals totals;
-  for (Operation& op : block) {
+  for (Operation &op : block) {
     if (auto matmul = dyn_cast<tosa::MatMulOp>(op)) {
       if (auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>()) {
         auto bType = cast<RankedTensorType>(bConst.getType());
@@ -83,14 +88,16 @@ DdrRegionTotals sizeRegions(Block& block) {
             const int64_t rows = aType.getShape()[1];
             const int64_t elemBytes = aType.getElementTypeBitWidth() / 8;
             const uint32_t perKTileBytes =
-                numK == 1 ? flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes)
+                numK == 1 ? flatChunkedRowBytes(rows, numFlatChunksFor(rows),
+                                                elemBytes)
                           : batchChunkedRowBytes(rows, elemBytes);
             totals.inputBytes += static_cast<uint32_t>(numK) * perKTileBytes;
           }
           // A bare (non-rescaled) matmul never has a bias so it always
           // needs the zero-bias slot
           if (!feedsRescale(matmul))
-            totals.maxZeroBiasBytes = std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
+            totals.maxZeroBiasBytes =
+                std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
         }
       }
     } else if (auto rescale = dyn_cast<tosa::RescaleOp>(op)) {
@@ -110,21 +117,24 @@ DdrRegionTotals sizeRegions(Block& block) {
         if (outType.getRank() == 3) {
           const int64_t rows = outType.getShape()[1];
           const int64_t elemBytes = outType.getElementTypeBitWidth() / 8;
-          producerBytes = static_cast<uint32_t>(numN) *
+          producerBytes =
+              static_cast<uint32_t>(numN) *
               flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes);
         } else {
           producerBytes = alignUp(byteSizeOf(outType));
         }
-        totals.maxScratchBytes = std::max(totals.maxScratchBytes, producerBytes);
+        totals.maxScratchBytes =
+            std::max(totals.maxScratchBytes, producerBytes);
       } else {
         // Each (N-tile, M-chunk) pair gets its own store.
         uint32_t perNTileBytes;
         if (outType.getRank() == 3) {
           const int64_t rows = outType.getShape()[1];
           const int64_t elemBytes = outType.getElementTypeBitWidth() / 8;
-          perNTileBytes = numK == 1
-              ? flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes)
-              : batchChunkedRowBytes(rows, elemBytes);
+          perNTileBytes =
+              numK == 1
+                  ? flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes)
+                  : batchChunkedRowBytes(rows, elemBytes);
         } else {
           perNTileBytes = alignUp(byteSizeOf(outType));
         }
@@ -133,9 +143,11 @@ DdrRegionTotals sizeRegions(Block& block) {
 
       if (chain) {
         if (chain->biasConst) {
-          totals.biasesBytes += static_cast<uint32_t>(numN) * alignUp(kBiasTileBytes);
+          totals.biasesBytes +=
+              static_cast<uint32_t>(numN) * alignUp(kBiasTileBytes);
         } else if (chain->matmul.getB().getDefiningOp<tosa::ConstOp>()) {
-          totals.maxZeroBiasBytes = std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
+          totals.maxZeroBiasBytes =
+              std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
         }
       }
     }
@@ -143,8 +155,9 @@ DdrRegionTotals sizeRegions(Block& block) {
   return totals;
 }
 
-SmallVector<SmallVector<uint32_t>> DdrLayout::allocateScratch(
-    int64_t numNTiles, int64_t rows, int64_t numFlatChunks, int64_t elemBytes) {
+SmallVector<SmallVector<uint32_t>>
+DdrLayout::allocateScratch(int64_t numNTiles, int64_t rows,
+                           int64_t numFlatChunks, int64_t elemBytes) {
   uint32_t cursor = next_is_a_ ? scratch_a_base_ : scratch_b_base_;
   next_is_a_ = !next_is_a_;
   SmallVector<SmallVector<uint32_t>> addrs(numNTiles);
@@ -152,7 +165,8 @@ SmallVector<SmallVector<uint32_t>> DdrLayout::allocateScratch(
     addrs[n].reserve(numFlatChunks);
     for (int64_t m = 0; m < numFlatChunks; ++m) {
       addrs[n].push_back(cursor);
-      const int64_t chunkRows = numFlatChunks > 1 ? flatChunkRows(rows, m) : rows;
+      const int64_t chunkRows =
+          numFlatChunks > 1 ? flatChunkRows(rows, m) : rows;
       cursor = alignUp(cursor + static_cast<uint32_t>(chunkRows * kTileWidth) *
                                     static_cast<uint32_t>(elemBytes));
     }
@@ -160,4 +174,4 @@ SmallVector<SmallVector<uint32_t>> DdrLayout::allocateScratch(
   return addrs;
 }
 
-}  // namespace macaque::codegen::conversion
+} // namespace macaque::codegen::conversion
