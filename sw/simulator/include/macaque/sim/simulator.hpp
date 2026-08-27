@@ -4,13 +4,13 @@
 #include <cstdint>
 #include <vector>
 
+#include "macaque/common/defs.hpp"
 #include "macaque/common/isa.hpp"
 #include "macaque/sim/requantizeAndActivate.hpp"
 
 namespace macaque::sim {
 
-constexpr int kArraySize = 14;
-constexpr int kBramDepth = 256;
+using namespace macaque::common;
 
 // TODO: Make a cycle-accurate simulator. Currently it is behavioral
 class Simulator {
