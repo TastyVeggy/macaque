@@ -1,27 +1,45 @@
 # Macaque
 
-A vertically integrated custom AI accelerator and software toolchain stack. 
+A vertically integrated custom AI accelerator and software toolchain.
 
-The design is implemented on the QMTECH Wukong V3 development board, which features a Xilinx Artix-7 XC7A100T FPGA.
+The AI accelerator, *Macaque NPU*, is implemented on the Xilinx Artix-7 XC7A100T FPGA on a QMTECH Wukong V3 development board, and features a 14×14 INT8 systolic array.
 
-**Status**: 
-* Hardware has a working iteration on real silicon. 
-* The software stack, which includes the simulator, codegen (or compiler backend) and runtime, is currently work in progress.
+The software toolchain consists of:
+* Macaque compiler backend (via `macaque-lower`, see [codegen](sw/codegen/)): lowers a limited subset of TOSA IR to Macaque NPU instructions, generating the program file consumed by the runtime
+* Macaque runtime (via `macaque`, see [runtime](sw/runtime/)): handles I/O between the host computer and Macaque NPU - loading instructions, weights, biases, and input data, and reading back outputs
+* Behavioural simulator (see [simulator](sw/simulator/)): a library that simulates Macaque NPU's execution in software
+
+> [!NOTE]
+> This project is still under active development. A full pipeline runs end-to-end on real FPGA hardware, but many features are missing or unstable.
+
+## Usage
+1. Train the weights on host computer. Can use any ML compiler frontend as long as the output can be lowered to TOSA IR, limited to TOSA operations that are actually supported by `macaque-lower` and the Macaque NPU itself. [`sw/runtime/examples/mnist_mlp.mlir`](sw/runtime/examples/mnist_mlp.mlir) is an example TOSA IR file: the output of training a small INT8 MNIST classifier .
+2. `macaque-lower` compiles that TOSA IR into the program which includes the Macaque instruction stream plus its DDR3 layout (weights, biases, and where a runtime input/output belongs)
+   ```sh
+   macaque-lower mnist_mlp.mlir -o mnist_mlp.json
+   ```
+
+    [`sw/runtime/examples/mnist_mlp.json`](sw/runtime/examples/mnist_mlp.json) is the program generated from [`sw/runtime/examples/mnist_mlp.mlir`](sw/runtime/examples/mnist_mlp.mlir)
+3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_image.cpp](sw/runtime/examples/)).
+   ```sh
+   macaque run mnist_mlp.json --port /dev/ttyUSB0 --image digit.png --scale 2.0079
+   ```
+
 
 ---
 
 ## Hardware
 
-| **Component** | **Part** |
-|---|---|
+| **Component** | **Part** | **Remark**|
+|---|---|---|
 | FPGA | Xilinx Artix-7 XC7A100T-1FGG676C |
 | Board | QMTECH XC7A100T Wukong V3 |
 | Clock | 50 MHz on-board crystal |
 | DSP slices | 240 × DSP48E1 |
 | Block RAM | 135 × BRAM36 (4,860 Kb) |
 | DDR3 | 256 MB Micron MT41K128M16JT-125:K |
-| Ethernet | Realtek RTL8211EG (1 Gbps) |
-| UART | CH340N USB-UART bridge |
+| Ethernet | Realtek RTL8211EG (1 Gbps) | Currently unused. **Future scope**: mode of communication used by host to read/write DDR3
+| UART | CH340N USB-UART bridge | Used for all mode of communication between host and device
 
 ---
 
@@ -113,10 +131,11 @@ Every instruction is a fixed-width 64-bit word
 |---|---|---|---|
 | `opcode` | `[63:60]` | 4 | see [opcode](#opcodes) table below |
 | `acc_mode` | `[59]` | 1 | Used in OP_MATMUL only: 1 = accumulate results (for tiling) |
-| `target` | `[58:56]` | 3 | Currently only used by OP_ACTIVATE |
-| `ddr3_addr` | `[55:28]` | 28 | byte address into DDR3 (256 MB space) |
+| `target` | `[58:56]` | 3 | OP_ACTIVATE: `act_func`. OP_MATMUL: `target[0]` = `weight_hold` (see below); `target[2:1]` reserved |
+| `ddr3_addr` | `[55:28]` | 28 | byte address into DDR3 (256 MB space) for LOAD/STORE. OP_MATMUL instead uses only `ddr3_addr[7:0]` as `mat_row_base` (see below) - the rest is unused |
 | `byte_count` | `[27:12]` | 16 | transfer size in bytes (LOAD/STORE) |
-| `tile_params` | `[11:0]` | 12 | tile size (essentially number of rows to feed, used only in OP_MATMUL and OP_ACTIVATE) |
+| `reserved` | `[11:8]` | 4 | currently not used 
+| `tile_params` | `[7:0]` | 8 | tile size (rows to feed), used only in OP_MATMUL and OP_ACTIVATE |
 
 ### Opcodes
 | Opcode | Value | Effect |
@@ -136,11 +155,18 @@ Every instruction is a fixed-width 64-bit word
 | Field | Bits | Meaning |
 |---|---|---|
 | `act_func` | `[58:56]` (`target`) | `0`=ReLU, `1`=leaky-ReLU (α=2⁻⁴, fixed), `2`=passthrough |
-| `act_scale_m` | `[55:28]` (`ddr3_addr`) | requantize multiplier (fixed-point) |
+| `act_scale_m` | `[55:39]` (`ddr3_addr[27:11]`) | requantize multiplier (fixed-point), 17 bits |
 | `act_scale_shift` | `[16:12]` (`byte_count[4:0]`) | requantize right-shift |
+| `act_row_base` | `[24:17]` (`byte_count[12:5]`) | out_buffer row this M-chunk's accumulator starts at |
+| `act_bank_hold` | `[25]` (`byte_count[13]`) | `1` = skip the `out_bank_sel` toggle|
 | `act_num_rows` | `[7:0]` (`tile_params[7:0]`) | rows to requantize |
 
-`[15:5]` is reserved for a per-instruction leaky-ReLU slope which is not yet wired up. The shift is currently the global `LEAKY_RELU_SHIFT` constant.
+### MATMUL field reinterpretation: weight_hold and mat_row_base
+
+| Field | Bits | Meaning |
+|---|---|---|
+| `weight_hold` | `[56]` (`target[0]`) | `1` = reuse the currently-loaded weight/bias bank instead of a fresh `load_weight`/`load_bias` - weight-stationary M-streaming |
+| `mat_row_base` | `[7:0]` (`ddr3_addr[7:0]`) | out_buffer row this M-chunk's accumulator starts at - `0` except for weight-hold combined with K-tiling |
 
 ## Register map
 
@@ -211,7 +237,7 @@ make -C hw program
 After programming the fpga, you can test it with:
 
 ```bash
-make test_hw
+make test-hw
 ```
 
 What the test does:
@@ -222,15 +248,17 @@ What the test does:
 #### Running testbenches on simulated hardware
 Refer to [README](hw/sim/README.md) in `hw/sim`.
 
-### Software (WIP)
+### Software
 
-To configure and build all C++ components
+To configure and build all C++ components as well as install the relevant binaries
 ```bash
 make sw
 ```
 
+The `macaque-lower` and `macaque` binaries can be found in the `bin` folder at the root of the repository. To learn more about usage, run them with `--help`. 
+
 To run unit tests:
 ```bash
-make test_sw
+make test-sw
 ```
 

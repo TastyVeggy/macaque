@@ -16,6 +16,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_subdirectory(include/macaque/Dialect)
 
 add_mlir_dialect_library(macaque_codegen
+    DISABLE_INSTALL
+
     lib/Dialect/MacaqueDialect.cpp
     lib/Dialect/MacaqueOps.cpp
     lib/Target/BinaryEmitter.cpp
@@ -58,6 +60,8 @@ target_link_libraries(macaque-lower PRIVATE
     MLIRSupport
     LLVMSupport
 )
+
+install(TARGETS macaque-lower RUNTIME DESTINATION bin)
 
 if(MACAQUE_BUILD_TESTS)
     add_subdirectory(tests)

@@ -38,6 +38,7 @@ if(MACAQUE_BUILD_TESTS)
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG        v1.14.0
+        EXCLUDE_FROM_ALL
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -48,3 +49,4 @@ endif()
 add_subdirectory(common)
 add_subdirectory(simulator)
 add_subdirectory(codegen)
+add_subdirectory(runtime)

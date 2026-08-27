@@ -1,0 +1,2 @@
+add_executable(infer_image infer_image.cpp)
+target_link_libraries(infer_image PRIVATE warnings macaque_runtime)

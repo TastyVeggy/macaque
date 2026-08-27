@@ -17,6 +17,8 @@ venv/
 build/
 work/
 dist/
+/bin/
+/lib/
 compile_commands.json
 .cache
 
@@ -38,4 +40,6 @@ vivado_pid*.str
 *.bin
 *.dcp
 .nvim
+
+mnist_pngs/
 
