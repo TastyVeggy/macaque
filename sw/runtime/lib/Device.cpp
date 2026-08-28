@@ -67,12 +67,17 @@ void Device::triggerAndWait(double timeoutSeconds) {
 
 std::vector<uint8_t> Device::readOutput(const Program &prog) {
   std::vector<uint8_t> raw;
+  raw.reserve(static_cast<size_t>(prog.outputValidBytes));
+  size_t cursor = 0;
   for (const IoTile &tile : prog.outputTiles) {
-    std::vector<uint8_t> chunk = readBytes(transport_, tile.addr, tile.bytes);
+    if (cursor >= static_cast<size_t>(prog.outputValidBytes))
+      break;
+    const size_t wantLen = std::min<size_t>(
+        tile.bytes, static_cast<size_t>(prog.outputValidBytes) - cursor);
+    std::vector<uint8_t> chunk = readBytes(transport_, tile.addr, wantLen);
     raw.insert(raw.end(), chunk.begin(), chunk.end());
+    cursor += wantLen;
   }
-  raw.resize(
-      std::min<size_t>(static_cast<size_t>(prog.outputValidBytes), raw.size()));
   return raw;
 }
 
