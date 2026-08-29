@@ -554,8 +554,10 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
           }
         }
       }
-      if (isIntermediate)
+      if (isIntermediate) {
         intermediateAddr[logicalOutput] = std::move(scratchAddrs);
+        SyncOp::create(rewriter, loc, TypeRange{});
+      }
 
       if (reluClamp)
         rewriter.eraseOp(*reluClamp);
@@ -621,8 +623,10 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
                         static_cast<uint16_t>(outputTileBytes));
       }
     }
-    if (isIntermediate)
+    if (isIntermediate) {
       intermediateAddr[logicalOutput] = std::move(scratchAddrs);
+      SyncOp::create(rewriter, loc, TypeRange{});
+    }
 
     if (reluClamp)
       rewriter.eraseOp(*reluClamp);

@@ -1413,6 +1413,69 @@ TEST(TosaToMacaque, ChainsRescaleOutputIntoNextMatmulViaScratch) {
   EXPECT_EQ(stores[1].getDdr3Addr(), 4648u); // layer 2: Output
 }
 
+TEST(TosaToMacaque, SyncBarrierEmittedBetweenChainedLayers) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul1 = buildConstMatmul(builder, loc, /*rows=*/2);
+  tosa::RescaleOp rescale1 =
+      buildRescale(builder, loc, matmul1.getResult(), builder.getIntegerType(8),
+                   /*multiplier=*/1, /*shift=*/0);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  auto bTy = RankedTensorType::get({1, 14, 14}, i8Ty);
+  auto b2 = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, static_cast<int8_t>(3)));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp2 = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp2 = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy2 = RankedTensorType::get({1, 2, 14}, i32Ty);
+  tosa::MatMulOp matmul2 = tosa::MatMulOp::create(
+      builder, loc, outTy2, rescale1.getResult(), b2, aZp2, bZp2);
+  buildRescale(builder, loc, matmul2.getResult(), i8Ty, /*multiplier=*/1,
+              /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  int syncIndex = -1;
+  int producerStoreIndex = -1;
+  int consumerLoadInputIndex = -1;
+  SmallVector<std::pair<int, uint32_t>> stores;  // (index, addr)
+  int idx = 0;
+  for (Operation &op : block) {
+    if (isa<SyncOp>(op)) {
+      ASSERT_EQ(syncIndex, -1) << "expected exactly one SyncOp";
+      syncIndex = idx;
+    }
+    if (auto s = dyn_cast<StoreOp>(op))
+      stores.push_back({idx, s.getDdr3Addr()});
+    if (auto li = dyn_cast<LoadInputOp>(op)) {
+      for (auto &[storeIdx, storeAddr] : stores)
+        if (storeAddr == li.getDdr3Addr()) {
+          producerStoreIndex = storeIdx;
+          consumerLoadInputIndex = idx;
+        }
+    }
+    idx++;
+  }
+
+  ASSERT_NE(syncIndex, -1) << "no SyncOp emitted between chained layers";
+  ASSERT_NE(producerStoreIndex, -1)
+      << "no store/load_input address match found (chain didn't happen)";
+  EXPECT_LT(producerStoreIndex, syncIndex)
+      << "sync must come after the producer's own store";
+  EXPECT_LT(syncIndex, consumerLoadInputIndex)
+      << "sync must come before the consumer's chained load_input";
+}
+
 TEST(TosaToMacaque, FourLayerChainAlternatesScratchAB) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
