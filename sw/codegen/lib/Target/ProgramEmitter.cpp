@@ -1,59 +1,64 @@
 #include "macaque/Target/ProgramEmitter.hpp"
 
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/JSON.h"
-#include "llvm/Support/raw_ostream.h"
-
 namespace macaque::codegen::target {
 
 namespace {
 
-std::string hexAddr(uint32_t addr) {
-  return "0x" + llvm::utohexstr(static_cast<uint64_t>(addr), /*LowerCase=*/true,
-                                /*Width=*/8);
+// .macq format: a fixed 40-byte header, then instructions/data/input/output tiles
+// packed back-to-back, all little-endian, no text encoding.
+constexpr char kMagic[4] = {'M', 'A', 'C', 'Q'};
+constexpr uint32_t kVersion = 1;
+
+void appendU32(std::vector<uint8_t> &out, uint32_t v) {
+  for (int i = 0; i < 4; ++i)
+    out.push_back(static_cast<uint8_t>(v >> (8 * i)));
 }
 
-llvm::json::Array ioTilesToJson(const conversion::IoSegment &tiles) {
-  llvm::json::Array arr;
-  arr.reserve(tiles.size());
-  for (const auto &[addr, bytes] : tiles)
-    arr.push_back(
-        llvm::json::Object{{"addr", hexAddr(addr)}, {"bytes", bytes}});
-  return arr;
+void appendU64(std::vector<uint8_t> &out, uint64_t v) {
+  for (int i = 0; i < 8; ++i)
+    out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+
+void appendI64(std::vector<uint8_t> &out, int64_t v) {
+  appendU64(out, static_cast<uint64_t>(v));
 }
 
 } // namespace
 
-std::string emitProgramJson(llvm::ArrayRef<uint64_t> instructions,
-                            const conversion::CompiledProgramInfo &info) {
-  llvm::json::Array instrArray;
-  instrArray.reserve(instructions.size());
-  for (uint64_t word : instructions)
-    instrArray.push_back(
-        "0x" + llvm::utohexstr(word, /*LowerCase=*/true, /*Width=*/16));
+std::vector<uint8_t> emitProgramBinary(llvm::ArrayRef<uint64_t> instructions,
+                                       const conversion::CompiledProgramInfo &info) {
+  std::vector<uint8_t> out;
+  out.reserve(40 + instructions.size() * 8 + info.data.size() * 8 +
+             (info.inputTiles.size() + info.outputTiles.size()) * 8);
 
-  llvm::json::Array dataArray;
-  dataArray.reserve(info.data.size());
+  out.insert(out.end(), kMagic, kMagic + 4);
+  appendU32(out, kVersion);
+  appendU32(out, static_cast<uint32_t>(instructions.size()));
+  appendU32(out, static_cast<uint32_t>(info.data.size()));
+  appendU32(out, static_cast<uint32_t>(info.inputTiles.size()));
+  appendU32(out, static_cast<uint32_t>(info.outputTiles.size()));
+  appendI64(out, info.inputValidBytes);
+  appendI64(out, info.outputValidBytes);
+
+  for (uint64_t word : instructions)
+    appendU64(out, word);
+
   for (const auto &[addr, bytes] : info.data) {
-    dataArray.push_back(llvm::json::Object{
-        {"addr", hexAddr(addr)},
-        {"bytes",
-         llvm::toHex(llvm::ArrayRef<uint8_t>(bytes.data(), bytes.size()),
-                     /*LowerCase=*/true)}});
+    appendU32(out, addr);
+    appendU32(out, static_cast<uint32_t>(bytes.size()));
+    out.insert(out.end(), bytes.begin(), bytes.end());
   }
 
-  llvm::json::Object root{
-      {"instructions", std::move(instrArray)},
-      {"data", std::move(dataArray)},
-      {"input_tiles", ioTilesToJson(info.inputTiles)},
-      {"output_tiles", ioTilesToJson(info.outputTiles)},
-      {"input_valid_bytes", info.inputValidBytes},
-      {"output_valid_bytes", info.outputValidBytes},
-  };
+  for (const auto &[addr, bytes] : info.inputTiles) {
+    appendU32(out, addr);
+    appendU32(out, bytes);
+  }
 
-  std::string out;
-  llvm::raw_string_ostream os(out);
-  os << llvm::json::Value(std::move(root));
+  for (const auto &[addr, bytes] : info.outputTiles) {
+    appendU32(out, addr);
+    appendU32(out, bytes);
+  }
+
   return out;
 }
 

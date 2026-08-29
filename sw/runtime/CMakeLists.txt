@@ -1,14 +1,3 @@
-include(FetchContent)
-
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG        v3.11.3
-)
-FetchContent_MakeAvailable(nlohmann_json)
-
-# Vendored locally (third_party/stb/) rather than FetchContent'd - single
-# public-domain headers, no reason to depend on the network at configure time.
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb")
 
@@ -27,7 +16,7 @@ target_include_directories(macaque_runtime
 
 target_link_libraries(macaque_runtime
     PUBLIC macaque_common
-    PRIVATE warnings nlohmann_json::nlohmann_json stb_image
+    PRIVATE warnings stb_image
 )
 
 add_executable(macaque tools/macaque.cpp)

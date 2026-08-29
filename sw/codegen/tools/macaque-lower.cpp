@@ -23,7 +23,7 @@ static llvm::cl::opt<std::string>
                   llvm::cl::desc("<input TOSA .mlir file>"),
                   llvm::cl::Required);
 static llvm::cl::opt<std::string>
-    outputFilename("o", llvm::cl::desc("Output JSON file (default: stdout)"),
+    outputFilename("o", llvm::cl::desc("Output .macq file (default: stdout)"),
                    llvm::cl::init("-"));
 
 int main(int argc, char **argv) {
@@ -86,7 +86,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::string json = ::macaque::codegen::target::emitProgramJson(*words, info);
+  std::vector<uint8_t> binary =
+      ::macaque::codegen::target::emitProgramBinary(*words, info);
 
   std::unique_ptr<llvm::ToolOutputFile> output =
       openOutputFile(outputFilename, &errorMessage);
@@ -94,7 +95,8 @@ int main(int argc, char **argv) {
     llvm::errs() << errorMessage << "\n";
     return 1;
   }
-  output->os() << json << "\n";
+  output->os().write(reinterpret_cast<const char *>(binary.data()),
+                     binary.size());
   output->keep();
   return 0;
 }

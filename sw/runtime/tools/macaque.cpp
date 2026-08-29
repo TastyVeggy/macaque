@@ -67,7 +67,7 @@ int8_t toSigned(uint8_t b) { return static_cast<int8_t>(b); }
 
 int cmdRun(const Args &args) {
   if (args.positional.empty())
-    throw std::runtime_error("run needs a program.json argument");
+    throw std::runtime_error("run needs a program.macq argument");
   const rt::Program prog = rt::Program::load(args.positional[0]);
   rt::Device device = openDevice(args);
 
@@ -144,7 +144,7 @@ int cmdStatus(const Args &args) {
 void printUsage() {
   std::cerr
       << "usage: macaque <run|status> ...\n"
-         "  macaque run <program.json> --port PORT [--input FILE | --image "
+         "  macaque run <program.macq> --port PORT [--input FILE | --image "
          "FILE.png --scale S [--zero-point Z]] [--output FILE]\n"
          "  macaque status --port PORT\n";
 }

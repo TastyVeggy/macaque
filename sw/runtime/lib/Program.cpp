@@ -1,94 +1,113 @@
 #include "macaque/runtime/Program.hpp"
 
+#include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
-
-#include <nlohmann/json.hpp>
+#include <vector>
 
 namespace macaque::runtime {
 
 namespace {
 
-using json = nlohmann::json;
+// .macq format: a fixed 40-byte header, then instructions/data/input/output
+// tiles packed back-to-back, all little-endian, no text encoding.
+constexpr char kMagic[4] = {'M', 'A', 'C', 'Q'};
+constexpr uint32_t kVersion = 1;
+constexpr size_t kHeaderSize = 40;
 
-uint8_t hexNibble(char c) {
-  if (c >= '0' && c <= '9')
-    return static_cast<uint8_t>(c - '0');
-  if (c >= 'a' && c <= 'f')
-    return static_cast<uint8_t>(c - 'a' + 10);
-  if (c >= 'A' && c <= 'F')
-    return static_cast<uint8_t>(c - 'A' + 10);
-  throw std::runtime_error("invalid hex digit in program JSON");
-}
-
-// Parses a "0x..." (or plain, no-prefix) hex string into an integer.
-uint64_t parseHexInt(const std::string &s) {
-  const size_t start =
-      (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 2 : 0;
-  if (start == s.size())
-    throw std::runtime_error("empty hex integer in program JSON");
-  uint64_t v = 0;
-  for (size_t i = start; i < s.size(); ++i)
-    v = (v << 4) | hexNibble(s[i]);
+uint32_t readU32(const std::vector<uint8_t> &buf, size_t &offset) {
+  if (offset + 4 > buf.size())
+    throw std::runtime_error("truncated .macq file");
+  uint32_t v = 0;
+  for (int i = 0; i < 4; ++i)
+    v |= static_cast<uint32_t>(buf[offset + static_cast<size_t>(i)]) << (8 * i);
+  offset += 4;
   return v;
 }
 
-// Parses a plain (no "0x" prefix) hex string of raw byte content.
-std::vector<uint8_t> parseHexBytes(const std::string &s) {
-  if (s.size() % 2 != 0)
-    throw std::runtime_error("odd-length hex byte string in program JSON");
-  std::vector<uint8_t> out;
-  out.reserve(s.size() / 2);
-  for (size_t i = 0; i < s.size(); i += 2)
-    out.push_back(
-        static_cast<uint8_t>((hexNibble(s[i]) << 4) | hexNibble(s[i + 1])));
-  return out;
+uint64_t readU64(const std::vector<uint8_t> &buf, size_t &offset) {
+  if (offset + 8 > buf.size())
+    throw std::runtime_error("truncated .macq file");
+  uint64_t v = 0;
+  for (int i = 0; i < 8; ++i)
+    v |= static_cast<uint64_t>(buf[offset + static_cast<size_t>(i)]) << (8 * i);
+  offset += 8;
+  return v;
 }
 
-std::vector<IoTile> parseIoTiles(const json &arr) {
-  std::vector<IoTile> tiles;
-  tiles.reserve(arr.size());
-  for (const json &t : arr)
-    tiles.push_back(IoTile{
-        static_cast<uint32_t>(parseHexInt(t.at("addr").get<std::string>())),
-        t.at("bytes").get<uint32_t>()});
-  return tiles;
+int64_t readI64(const std::vector<uint8_t> &buf, size_t &offset) {
+  return static_cast<int64_t>(readU64(buf, offset));
+}
+
+std::vector<uint8_t> readBytes(const std::vector<uint8_t> &buf, size_t &offset,
+                               size_t len) {
+  if (offset + len > buf.size())
+    throw std::runtime_error("truncated .macq file");
+  std::vector<uint8_t> out(buf.begin() + static_cast<ptrdiff_t>(offset),
+                           buf.begin() + static_cast<ptrdiff_t>(offset + len));
+  offset += len;
+  return out;
 }
 
 } // namespace
 
 Program Program::load(const std::string &path) {
-  std::ifstream f(path);
+  std::ifstream f(path, std::ios::binary);
   if (!f)
     throw std::runtime_error("failed to open program file: " + path);
 
-  json j;
-  try {
-    f >> j;
-  } catch (const json::parse_error &e) {
-    throw std::runtime_error("failed to parse program JSON (" + path +
-                             "): " + e.what());
-  }
+  const std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)),
+                                 std::istreambuf_iterator<char>());
+
+  if (buf.size() < kHeaderSize)
+    throw std::runtime_error("malformed .macq file (" + path + "): too short");
+  if (!std::equal(buf.begin(), buf.begin() + 4, kMagic))
+    throw std::runtime_error("malformed .macq file (" + path +
+                             "): bad magic - not a .macq program");
 
   Program prog;
   try {
-    prog.instructions.reserve(j.at("instructions").size());
-    for (const json &s : j.at("instructions"))
-      prog.instructions.push_back(parseHexInt(s.get<std::string>()));
+    size_t offset = 4;
+    const uint32_t version = readU32(buf, offset);
+    if (version != kVersion)
+      throw std::runtime_error("unsupported .macq version " +
+                               std::to_string(version) + " (expected " +
+                               std::to_string(kVersion) + ")");
 
-    prog.data.reserve(j.at("data").size());
-    for (const json &t : j.at("data"))
-      prog.data.push_back(DataTile{
-          static_cast<uint32_t>(parseHexInt(t.at("addr").get<std::string>())),
-          parseHexBytes(t.at("bytes").get<std::string>())});
+    const uint32_t numInstructions = readU32(buf, offset);
+    const uint32_t numDataTiles = readU32(buf, offset);
+    const uint32_t numInputTiles = readU32(buf, offset);
+    const uint32_t numOutputTiles = readU32(buf, offset);
+    prog.inputValidBytes = readI64(buf, offset);
+    prog.outputValidBytes = readI64(buf, offset);
 
-    prog.inputTiles = parseIoTiles(j.at("input_tiles"));
-    prog.outputTiles = parseIoTiles(j.at("output_tiles"));
-    prog.inputValidBytes = j.at("input_valid_bytes").get<int64_t>();
-    prog.outputValidBytes = j.at("output_valid_bytes").get<int64_t>();
-  } catch (const json::exception &e) {
-    throw std::runtime_error("malformed program JSON (" + path +
-                             "): " + e.what());
+    prog.instructions.reserve(numInstructions);
+    for (uint32_t i = 0; i < numInstructions; ++i)
+      prog.instructions.push_back(readU64(buf, offset));
+
+    prog.data.reserve(numDataTiles);
+    for (uint32_t i = 0; i < numDataTiles; ++i) {
+      const uint32_t addr = readU32(buf, offset);
+      const uint32_t len = readU32(buf, offset);
+      prog.data.push_back(DataTile{addr, readBytes(buf, offset, len)});
+    }
+
+    prog.inputTiles.reserve(numInputTiles);
+    for (uint32_t i = 0; i < numInputTiles; ++i) {
+      const uint32_t addr = readU32(buf, offset);
+      const uint32_t bytes = readU32(buf, offset);
+      prog.inputTiles.push_back(IoTile{addr, bytes});
+    }
+
+    prog.outputTiles.reserve(numOutputTiles);
+    for (uint32_t i = 0; i < numOutputTiles; ++i) {
+      const uint32_t addr = readU32(buf, offset);
+      const uint32_t bytes = readU32(buf, offset);
+      prog.outputTiles.push_back(IoTile{addr, bytes});
+    }
+  } catch (const std::runtime_error &e) {
+    throw std::runtime_error("malformed .macq file (" + path + "): " + e.what());
   }
 
   return prog;

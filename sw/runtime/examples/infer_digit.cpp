@@ -10,7 +10,7 @@ namespace rt = macaque::runtime;
 int main(int argc, char **argv) {
   if (argc != 4) {
     std::cerr << "usage: " << argv[0]
-              << " <program.json> <digit.png> <serial_port>\n";
+              << " <program.macq> <digit.png> <serial_port>\n";
     return 1;
   }
 

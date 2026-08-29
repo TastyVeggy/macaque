@@ -13,16 +13,16 @@ The software toolchain consists of:
 > This project is still under active development. A full pipeline runs end-to-end on real FPGA hardware, but many features are missing or unstable.
 
 ## Usage
-1. Train the weights on host computer. Can use any ML compiler frontend as long as the output can be lowered to TOSA IR, limited to TOSA operations that are actually supported by `macaque-lower` and the Macaque NPU itself. [`sw/runtime/examples/mnist_mlp.mlir`](sw/runtime/examples/mnist_mlp.mlir) is an example TOSA IR file: the output of training a small INT8 MNIST classifier .
-2. `macaque-lower` compiles that TOSA IR into the program which includes the Macaque instruction stream plus its DDR3 layout (weights, biases, and where a runtime input/output belongs)
+1. Train the weights on host computer. Can use any ML compiler frontend as long as the output can be lowered to TOSA IR, limited to TOSA operations that are actually supported by `macaque-lower` and the Macaque NPU itself. [`sw/runtime/examples/mnist/mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir) is an example TOSA IR file: the output of training a small INT8 MNIST classifier .
+2. `macaque-lower` compiles that TOSA IR into a `.macq` program
    ```sh
-   macaque-lower mnist_mlp.mlir -o mnist_mlp.json
+   macaque-lower mnist_mlp.mlir -o mnist_mlp.macq
    ```
 
-    [`sw/runtime/examples/mnist_mlp.json`](sw/runtime/examples/mnist_mlp.json) is the program generated from [`sw/runtime/examples/mnist_mlp.mlir`](sw/runtime/examples/mnist_mlp.mlir)
-3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_image.cpp](sw/runtime/examples/)).
+    [`sw/runtime/examples/mnist/mnist_mlp.macq`](sw/runtime/examples/mnist/mnist_mlp.macq) is the program generated from [`sw/runtime/examples/mnist/mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir)
+3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_digit.cpp](sw/runtime/examples/)).
    ```sh
-   macaque run mnist_mlp.json --port /dev/ttyUSB0 --image digit.png --scale 2.0079
+   macaque run mnist_mlp.macq --port /dev/ttyUSB0 --image digit.png --scale 2.0079
    ```
 
 
