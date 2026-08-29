@@ -8,8 +8,9 @@
 namespace macaque::sim {
 
 namespace {
+using macaque::common::isa::Instruction;
 using macaque::common::isa::Opcode;
-}
+} // namespace
 
 Simulator::Simulator(size_t ddr_bytes) : mem_(ddr_bytes, 0) {}
 
@@ -23,30 +24,50 @@ std::vector<uint8_t> Simulator::read(uint32_t addr, size_t len) const {
 
 void Simulator::run(const std::vector<uint64_t> &program) {
   for (const uint64_t word : program) {
-    execute(macaque::common::isa::Instruction::decode(word));
+    execute(word);
   }
 }
 
-void Simulator::execute(const macaque::common::isa::Instruction &ins) {
-  switch (ins.opcode) {
-  case Opcode::LoadWeight:
-  case Opcode::LoadInput: {
+void Simulator::execute(uint64_t word) {
+  switch (macaque::common::isa::decodeOpcode(word)) {
+  case Opcode::LoadWeight: {
+    const Instruction ins = Instruction::decode(word);
     const size_t rows = ins.byte_count / kArraySize;
     if (rows > static_cast<size_t>(kBramDepth)) {
       throw std::invalid_argument(
           "load exceeds the on-chip buffer depth (M not chunked to fit)");
     }
-    std::array<std::array<int8_t, kArraySize>, kBramDepth> &buf =
-        (ins.opcode == Opcode::LoadWeight) ? weight_ : act_;
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
-        buf[r][c] =
+        weight_[r][c] =
             static_cast<int8_t>(mem_[ins.ddr3_addr + r * kArraySize + c]);
       }
     }
     break;
   }
+  case Opcode::LoadInput: {
+    const Instruction ins = Instruction::decode(word);
+    const size_t rows = ins.valid_bytes_per_row != 0
+                            ? ins.input_rows
+                            : ins.byte_count / kArraySize;
+    if (rows > static_cast<size_t>(kBramDepth)) {
+      throw std::invalid_argument(
+          "load exceeds the on-chip buffer depth (M not chunked to fit)");
+    }
+    size_t srcOffset = 0;
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
+        const bool real =
+            ins.valid_bytes_per_row == 0 || c < ins.valid_bytes_per_row;
+        act_[r][c] =
+            real ? static_cast<int8_t>(mem_[ins.ddr3_addr + srcOffset++])
+                 : static_cast<int8_t>(0);
+      }
+    }
+    break;
+  }
   case Opcode::LoadBias: {
+    const Instruction ins = Instruction::decode(word);
     const size_t lanes = ins.byte_count / sizeof(int32_t);
     const size_t n = std::min(lanes, static_cast<size_t>(kArraySize));
     for (size_t c = 0; c < n; ++c) {
@@ -61,8 +82,9 @@ void Simulator::execute(const macaque::common::isa::Instruction &ins) {
     break;
   }
   case Opcode::Matmul: {
+    const auto ins = macaque::common::isa::decodeMatmul(word);
     const size_t m = ins.tile_params;
-    const size_t rowBase = macaque::common::isa::mat_row_base(ins);
+    const size_t rowBase = ins.mat_row_base;
     if (rowBase + m > static_cast<size_t>(kBramDepth)) {
       throw std::invalid_argument(
           "mat_row_base + rows exceeds the on-chip buffer depth");
@@ -80,11 +102,9 @@ void Simulator::execute(const macaque::common::isa::Instruction &ins) {
     break;
   }
   case Opcode::Activate: {
-    const size_t m = macaque::common::isa::num_rows(ins);
-    const uint32_t mm = macaque::common::isa::scale_m(ins);
-    const uint32_t shift = macaque::common::isa::scale_shift(ins);
-    const auto func = macaque::common::isa::act_func(ins);
-    const size_t rowBase = macaque::common::isa::act_row_base(ins);
+    const auto ins = macaque::common::isa::decodeActivate(word);
+    const size_t m = ins.act_num_rows;
+    const size_t rowBase = ins.act_row_base;
     if (rowBase + m > static_cast<size_t>(kBramDepth)) {
       throw std::invalid_argument(
           "act_row_base + rows exceeds the on-chip buffer depth");
@@ -92,12 +112,14 @@ void Simulator::execute(const macaque::common::isa::Instruction &ins) {
     for (size_t r = 0; r < m; ++r) {
       for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
         act_[r][c] =
-            requantizeAndActivate(out_[rowBase + r][c], mm, shift, func);
+            requantizeAndActivate(out_[rowBase + r][c], ins.act_scale_m,
+                                  ins.act_scale_shift, ins.act_func);
       }
     }
     break;
   }
   case Opcode::Store: {
+    const Instruction ins = Instruction::decode(word);
     const size_t rows = ins.byte_count / kArraySize;
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {

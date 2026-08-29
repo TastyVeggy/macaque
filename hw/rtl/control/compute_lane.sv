@@ -92,8 +92,8 @@ module compute_lane (
 
   logic busy_r;
 
-  npu_pkg::decoded_instr_t d_comp;
-  assign d_comp = npu_pkg::decode_instr(fifo_data);
+  npu_pkg::opcode_t d_comp_opcode;
+  assign d_comp_opcode = npu_pkg::decode_opcode(fifo_data);
 
   typedef enum logic [3:0] {
     IDLE,
@@ -186,7 +186,7 @@ module compute_lane (
         IDLE: begin
           if (!fifo_empty) begin
             busy_r <= '1;
-            case (d_comp.opcode)
+            case (d_comp_opcode)
 
               npu_pkg::OP_MATMUL: begin
                 automatic npu_pkg::mat_instr_t d_mat = npu_pkg::decode_mat_instr(fifo_data);
@@ -214,12 +214,13 @@ module compute_lane (
               end
 
               npu_pkg::OP_STORE: begin
+                automatic npu_pkg::mem_instr_t d_mem = npu_pkg::decode_mem_instr(fifo_data);
                 if (!dma_issue) begin
                   // Channel free: issue the store (1-cycle request on the bus).
                   fifo_pop   <= '1;
                   store_req  <= '1;
-                  ddr3_addr  <= d_comp.ddr3_addr;
-                  byte_count <= d_comp.byte_count;
+                  ddr3_addr  <= d_mem.ddr3_addr;
+                  byte_count <= d_mem.byte_count;
                   state      <= STORE_WAIT;
                 end
                 // else: DMA is issuing a load this cycle so stall

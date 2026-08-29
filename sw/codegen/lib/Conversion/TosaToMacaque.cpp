@@ -35,6 +35,25 @@ uint32_t activationTileBytes(RankedTensorType aType, int64_t rows) {
          (aType.getElementTypeBitWidth() / 8);
 }
 
+struct InputLoadSizing {
+  uint32_t byteCount;       // LoadInputOp's byte_count operand
+  uint8_t validBytesPerRow; // 0 disables padding
+  uint8_t inputRows;        // only meaningful when validBytesPerRow != 0
+};
+
+InputLoadSizing computeInputLoadSizing(RankedTensorType aType, int64_t fullK,
+                                       int64_t kOffset, int64_t chunkRows,
+                                       bool isRuntimeInput) {
+  const int64_t elemBytes = aType.getElementTypeBitWidth() / 8;
+  const int64_t validCols = std::min(kTileWidth, fullK - kOffset);
+  if (!isRuntimeInput || validCols >= kTileWidth)
+    return {activationTileBytes(aType, chunkRows), /*validBytesPerRow=*/0,
+            /*inputRows=*/0};
+  const auto validBytesPerRow = static_cast<uint8_t>(validCols * elemBytes);
+  return {static_cast<uint32_t>(chunkRows) * validBytesPerRow, validBytesPerRow,
+          static_cast<uint8_t>(chunkRows)};
+}
+
 // Materializes every element of a rank-3 [1, dim0, dim1] integer
 // tosa.const into a flat, row-major value grid, for `extractTileBytes`
 // to index into
@@ -128,8 +147,9 @@ FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
 // next consumer but transposed
 SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
     const MatmulOperands &operands, DdrLayout &layout,
-    const DenseMap<Value, SmallVector<SmallVector<uint32_t>>>
-        &intermediateAddr) {
+    const DenseMap<Value, SmallVector<SmallVector<uint32_t>>> &intermediateAddr,
+    bool &isRuntimeInput) {
+  isRuntimeInput = false;
   auto chained = intermediateAddr.find(operands.a);
   if (chained != intermediateAddr.end()) {
     const auto &producerAddrs = chained->second; // [nTile][mChunk]
@@ -147,6 +167,7 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
   // should almost always be supplied by the runtime or result from a previous
   // layer
   auto aConst = operands.a.getDefiningOp<tosa::ConstOp>();
+  isRuntimeInput = !aConst;
   const SmallVector<int64_t> actValues =
       aConst ? flattenConstValues(aConst) : SmallVector<int64_t>{};
   const int64_t fullK = operands.aType.getShape()[2];
@@ -182,7 +203,8 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
 // N-tile which is the only chunk in the group that actually loads weight.
 void emitFlatFreshChunkMatmul(const MatmulOperands &operands, int64_t nTile,
                               int64_t chunkRows, uint32_t inputAddr,
-                              DdrLayout &layout, Location loc,
+                              bool isRuntimeInput, DdrLayout &layout,
+                              Location loc,
                               ConversionPatternRewriter &rewriter) {
   const uint32_t weightBytes = weightTileBytes(operands.bType);
   const uint32_t weightAddr = layout.allocateWeight(weightBytes);
@@ -200,9 +222,12 @@ void emitFlatFreshChunkMatmul(const MatmulOperands &operands, int64_t nTile,
                                      /*colBase=*/nTile * kTileWidth, kTileWidth,
                                      kTileWidth, weightElemBytes));
 
-  const uint32_t inputBytes = activationTileBytes(operands.aType, chunkRows);
+  const int64_t fullActK = operands.aType.getShape()[2];
+  const InputLoadSizing sizing = computeInputLoadSizing(
+      operands.aType, fullActK, /*kOffset=*/0, chunkRows, isRuntimeInput);
   LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
-                      static_cast<uint16_t>(inputBytes));
+                      static_cast<uint16_t>(sizing.byteCount),
+                      sizing.validBytesPerRow, sizing.inputRows);
 
   MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
                    static_cast<uint16_t>(chunkRows));
@@ -210,11 +235,15 @@ void emitFlatFreshChunkMatmul(const MatmulOperands &operands, int64_t nTile,
 
 // Emits every M-chunk after the group's first: no load_weight/load_bias.
 void emitFlatHeldChunkMatmul(const MatmulOperands &operands, int64_t chunkRows,
-                             uint32_t inputAddr, Location loc,
+                             uint32_t inputAddr, bool isRuntimeInput,
+                             Location loc,
                              ConversionPatternRewriter &rewriter) {
-  const uint32_t inputBytes = activationTileBytes(operands.aType, chunkRows);
+  const int64_t fullActK = operands.aType.getShape()[2];
+  const InputLoadSizing sizing = computeInputLoadSizing(
+      operands.aType, fullActK, /*kOffset=*/0, chunkRows, isRuntimeInput);
   LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
-                      static_cast<uint16_t>(inputBytes));
+                      static_cast<uint16_t>(sizing.byteCount),
+                      sizing.validBytesPerRow, sizing.inputRows);
   MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
                    static_cast<uint16_t>(chunkRows), /*weight_hold=*/true);
 }
@@ -258,8 +287,8 @@ void emitBias(tosa::ConstOp biasConst, int64_t nTile, DdrLayout &layout,
 // address
 SmallVector<SmallVector<uint32_t>> allocateBatchChunkInputAddrs(
     const MatmulOperands &operands, DdrLayout &layout,
-    const DenseMap<Value, SmallVector<SmallVector<uint32_t>>>
-        &intermediateAddr) {
+    const DenseMap<Value, SmallVector<SmallVector<uint32_t>>> &intermediateAddr,
+    bool &isRuntimeInput) {
   auto chained = intermediateAddr.find(operands.a);
   const int64_t elemBytes = operands.aType.getElementTypeBitWidth() / 8;
 
@@ -267,6 +296,7 @@ SmallVector<SmallVector<uint32_t>> allocateBatchChunkInputAddrs(
   // should almost always be supplied by the runtime or result from a previous
   // layer
   auto aConst = operands.a.getDefiningOp<tosa::ConstOp>();
+  isRuntimeInput = !aConst && chained == intermediateAddr.end();
   const SmallVector<int64_t> actValues =
       aConst ? flattenConstValues(aConst) : SmallVector<int64_t>{};
   const int64_t fullK = operands.aType.getShape()[2];
@@ -322,10 +352,12 @@ struct BatchChunk {
 SmallVector<BatchChunk>
 emitBatchMatmuls(const MatmulOperands &operands, int64_t batchRows,
                  ArrayRef<uint32_t> weightAddrs, uint32_t biasAddr,
-                 ArrayRef<SmallVector<uint32_t>> batchChunkAddrs, Location loc,
+                 ArrayRef<SmallVector<uint32_t>> batchChunkAddrs,
+                 bool isRuntimeInput, Location loc,
                  ConversionPatternRewriter &rewriter) {
   const int64_t numChunks = numTilesFor(batchRows);
   const uint32_t weightBytes = weightTileBytes(operands.bType);
+  const int64_t fullK = operands.aType.getShape()[2];
 
   SmallVector<BatchChunk> chunks;
   chunks.reserve(numChunks);
@@ -341,10 +373,12 @@ emitBatchMatmuls(const MatmulOperands &operands, int64_t batchRows,
         if (k == 0)
           emitBiasLoad(biasAddr, loc, rewriter);
       }
-      const uint32_t inputBytes =
-          activationTileBytes(operands.aType, chunks[c].rows);
+      const InputLoadSizing sizing =
+          computeInputLoadSizing(operands.aType, fullK, k * kTileWidth,
+                                 chunks[c].rows, isRuntimeInput);
       LoadInputOp::create(rewriter, loc, TypeRange{}, batchChunkAddrs[c][k],
-                          static_cast<uint16_t>(inputBytes));
+                          static_cast<uint16_t>(sizing.byteCount),
+                          sizing.validBytesPerRow, sizing.inputRows);
       MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/k > 0,
                        static_cast<uint16_t>(chunks[c].rows),
                        /*weight_hold=*/held,
@@ -459,8 +493,10 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
       // Input is shared across every N-tile (activation doesn't depend on
       // which output-channel tile is being computed), so it's allocated
       // once, outside the N-tile loop
+      bool isRuntimeInput = false;
       SmallVector<SmallVector<uint32_t>> chunkAddrs =
-          allocateBatchChunkInputAddrs(*operands, layout, intermediateAddr);
+          allocateBatchChunkInputAddrs(*operands, layout, intermediateAddr,
+                                       isRuntimeInput);
 
       // One Scratch slot per (N-tile, hold-batch)
       SmallVector<SmallVector<uint32_t>> scratchAddrs;
@@ -485,8 +521,8 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
           const int64_t numChunks = numTilesFor(batchRows);
           SmallVector<BatchChunk> chunks = emitBatchMatmuls(
               *operands, batchRows, weightAddrs, biasAddr,
-              ArrayRef(chunkAddrs).slice(chunkOffset, numChunks), loc,
-              rewriter);
+              ArrayRef(chunkAddrs).slice(chunkOffset, numChunks),
+              isRuntimeInput, loc, rewriter);
           chunkOffset += numChunks;
 
           for (int64_t c = 0; c < numChunks; c++) {
@@ -532,8 +568,10 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
 
     // numKTiles == 1 case
 
+    bool isRuntimeInput = false;
     SmallVector<SmallVector<uint32_t>> kTileInputAddrs =
-        allocateFlatChunkInputAddrs(*operands, layout, intermediateAddr);
+        allocateFlatChunkInputAddrs(*operands, layout, intermediateAddr,
+                                    isRuntimeInput);
 
     // Scratch A/B's addresses for this producer, allocated up front
     SmallVector<SmallVector<uint32_t>> scratchAddrs;
@@ -551,11 +589,11 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
           // matmul runs.
           emitBias(chain->biasConst, n, layout, loc, rewriter);
           emitFlatFreshChunkMatmul(*operands, n, chunkRows,
-                                   kTileInputAddrs[m][0], layout, loc,
-                                   rewriter);
+                                   kTileInputAddrs[m][0], isRuntimeInput,
+                                   layout, loc, rewriter);
         } else {
           emitFlatHeldChunkMatmul(*operands, chunkRows, kTileInputAddrs[m][0],
-                                  loc, rewriter);
+                                  isRuntimeInput, loc, rewriter);
         }
 
         ActivateOp::create(rewriter, loc, TypeRange{},

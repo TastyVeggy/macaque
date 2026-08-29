@@ -51,75 +51,59 @@ package npu_pkg;
     OP_SYNC        = 4'h6
   } opcode_t;
 
-  // ISA instruction field positions
   parameter int ISA_OPCODE_W = 4;
   parameter int ISA_OPCODE_L = 60;
-  parameter int ISA_ACC_MODE_B = 59;
-  parameter int ISA_TARGET_H = 58;
-  parameter int ISA_TARGET_L = 56;
-  parameter int ISA_TARGET_W = 3;
-  parameter int ISA_DDR_ADDR_H = 55;
-  parameter int ISA_DDR_ADDR_L = 28;
-  parameter int ISA_DDR_ADDR_W = 28;
-  parameter int ISA_BYTE_CNT_H = 27;
-  parameter int ISA_BYTE_CNT_L = 12;
-  parameter int ISA_BYTE_CNT_W = 16;
-  parameter int ISA_RESERVED_H = 11;
-  parameter int ISA_RESERVED_L = 8;
-  parameter int ISA_RESERVED_W = 4;
-  parameter int ISA_TILE_PARAMS_H = 7;
-  parameter int ISA_TILE_PARAMS_L = 0;
-  parameter int ISA_TILE_PARAMS_W = 8;
 
-  // Decoded instruction struct (generic view, used by all lanes).
-  // For OP_MATMUL use the NAMED view decode_mat_instr()/mat_instr_t, and for
-  // OP_ACTIVATE use decode_act_instr()/act_instr_t, below.
-  typedef struct packed {
-    opcode_t                      opcode;
-    logic                         acc_mode;
-    logic [ISA_TARGET_W-1:0]      target;
-    logic [ISA_DDR_ADDR_W-1:0]    ddr3_addr;
-    logic [ISA_BYTE_CNT_W-1:0]    byte_count;
-    logic [ISA_RESERVED_W-1:0]    reserved;
-    logic [ISA_TILE_PARAMS_W-1:0] tile_params;
-  } decoded_instr_t;
-
-  function automatic decoded_instr_t decode_instr(logic [63:0] raw);
-    decoded_instr_t d;
-    d.opcode      = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
-    d.acc_mode    = raw[ISA_ACC_MODE_B];
-    d.target      = raw[ISA_TARGET_H:ISA_TARGET_L];
-    d.ddr3_addr   = raw[ISA_DDR_ADDR_H:ISA_DDR_ADDR_L];
-    d.byte_count  = raw[ISA_BYTE_CNT_H:ISA_BYTE_CNT_L];
-    d.reserved    = raw[ISA_RESERVED_H:ISA_RESERVED_L];
-    d.tile_params = raw[ISA_TILE_PARAMS_H:ISA_TILE_PARAMS_L];
-    return d;
+  function automatic opcode_t decode_opcode(logic [63:0] raw);
+    return opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
   endfunction
 
-  // Named view of a MATMUL instruction.
+  parameter int ISA_DDR_ADDR_L = 28;
+  parameter int ISA_DDR_ADDR_W = 28;
+  parameter int ISA_BYTE_CNT_L = 12;
+  parameter int ISA_BYTE_CNT_W = 16;
+
   typedef struct packed {
-    opcode_t                      opcode;        // [63:60]
-    logic                         acc_mode;      // [59] K-tile accumulate flag
-    logic [1:0]                   reserved2;     // [58:57] (target[2:1])
-    logic                         weight_hold;   // [56]    (target[0])
-    logic [19:0]                  reserved3;     // [55:36] (ddr3_addr[27:8])
-    logic [7:0]                   mat_row_base;  // [35:28] (ddr3_addr[7:0])
-    logic [15:0]                  reserved;      // [27:12] (byte_count)
-    logic [ISA_RESERVED_W-1:0]    reserved4;     // [11:8] (reserved)
-    logic [ISA_TILE_PARAMS_W-1:0] tile_params;   // [7:0] (tile_params)
+    logic [ISA_DDR_ADDR_W-1:0] ddr3_addr;   // [55:28]
+    logic [ISA_BYTE_CNT_W-1:0] byte_count;  // [27:12]
+  } mem_instr_t;
+
+  function automatic mem_instr_t decode_mem_instr(logic [63:0] raw);
+    mem_instr_t m;
+    m.ddr3_addr  = raw[ISA_DDR_ADDR_L+:ISA_DDR_ADDR_W];
+    m.byte_count = raw[ISA_BYTE_CNT_L+:ISA_BYTE_CNT_W];
+    return m;
+  endfunction
+
+  typedef struct packed {
+    logic [ISA_DDR_ADDR_W-1:0] ddr3_addr;            // [55:28]
+    logic [ISA_BYTE_CNT_W-1:0] byte_count;           // [27:12]
+    logic [3:0]                valid_bytes_per_row;  // [11:8]
+    logic [7:0]                input_rows;           // [7:0]
+  } load_instr_t;
+
+  function automatic load_instr_t decode_load_instr(logic [63:0] raw);
+    load_instr_t l;
+    l.ddr3_addr           = raw[ISA_DDR_ADDR_L+:ISA_DDR_ADDR_W];
+    l.byte_count          = raw[ISA_BYTE_CNT_L+:ISA_BYTE_CNT_W];
+    l.valid_bytes_per_row = raw[11:8];
+    l.input_rows          = raw[7:0];
+    return l;
+  endfunction
+
+  typedef struct packed {
+    logic       acc_mode;      // [59] K-tile accumulate flag
+    logic       weight_hold;   // [56]
+    logic [7:0] mat_row_base;  // [35:28]
+    logic [7:0] tile_params;   // [7:0]
   } mat_instr_t;
 
   function automatic mat_instr_t decode_mat_instr(logic [63:0] raw);
     mat_instr_t m;
-    m.opcode       = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
-    m.acc_mode     = raw[ISA_ACC_MODE_B];
-    m.reserved2    = raw[ISA_TARGET_H-:2];
-    m.weight_hold  = raw[ISA_TARGET_L];
-    m.reserved3    = raw[ISA_DDR_ADDR_H-:20];
-    m.mat_row_base = raw[ISA_DDR_ADDR_L+:8];
-    m.reserved     = raw[ISA_BYTE_CNT_H:ISA_BYTE_CNT_L];
-    m.reserved4    = raw[ISA_RESERVED_H:ISA_RESERVED_L];
-    m.tile_params  = raw[ISA_TILE_PARAMS_H:ISA_TILE_PARAMS_L];
+    m.acc_mode     = raw[59];
+    m.weight_hold  = raw[56];
+    m.mat_row_base = raw[35:28];
+    m.tile_params  = raw[7:0];
     return m;
   endfunction
 
@@ -132,32 +116,25 @@ package npu_pkg;
   // Leaky-ReLU negative slope: alpha = 2^-LEAKY_RELU_SHIFT
   parameter int LEAKY_RELU_SHIFT = 4;
 
-  // Named view of an ACTIVATE instruction.
+  // [38:26] are spare (TODO: a future per-instruction leaky-ReLU
+  // shift)
   typedef struct packed {
-    opcode_t opcode;  // [63:60]
-    logic acc_mode;  // [59] (unused by ACTIVATE)
-    act_func_t act_func;  // [58:56] (target)
-    logic [16:0] act_scale_m;  // [55:39] (ddr3_addr[27:11])
-    logic [12:0] act_reserved;     // [38:26] (ddr3_addr[10:0], byte_count[15:14]) - spare, TODO: leaky relu shift
-    logic act_bank_hold;  // [25]    (byte_count[13])
-    logic [7:0] act_row_base;  // [24:17] (byte_count[12:5])
-    logic [4:0] act_scale_shift;  // [16:12] (byte_count[4:0])
-    logic [ISA_RESERVED_W-1:0] reserved;  // [11:8] (reserved)
-    logic [ISA_TILE_PARAMS_W-1:0] act_num_rows;  // (tile_params)
+    act_func_t   act_func;         // [58:56]
+    logic [16:0] act_scale_m;      // [55:39]
+    logic        act_bank_hold;    // [25]
+    logic [7:0]  act_row_base;     // [24:17]
+    logic [4:0]  act_scale_shift;  // [16:12]
+    logic [7:0]  act_num_rows;     // [7:0]
   } act_instr_t;
 
   function automatic act_instr_t decode_act_instr(logic [63:0] raw);
     act_instr_t a;
-    a.opcode          = opcode_t'(raw[ISA_OPCODE_L+:ISA_OPCODE_W]);
-    a.acc_mode        = raw[ISA_ACC_MODE_B];
-    a.act_func        = act_func_t'(raw[ISA_TARGET_H:ISA_TARGET_L]);
-    a.act_scale_m     = raw[ISA_DDR_ADDR_H-:17];  // [55:39]
-    a.act_reserved    = raw[ISA_DDR_ADDR_H-17-:13];  // [38:26]
-    a.act_bank_hold   = raw[ISA_BYTE_CNT_H-2];
-    a.act_row_base    = raw[ISA_BYTE_CNT_H-3-:8];
-    a.act_scale_shift = raw[ISA_BYTE_CNT_L+:5];
-    a.reserved        = raw[ISA_RESERVED_H:ISA_RESERVED_L];
-    a.act_num_rows    = raw[ISA_TILE_PARAMS_H:ISA_TILE_PARAMS_L];
+    a.act_func        = act_func_t'(raw[58:56]);
+    a.act_scale_m     = raw[55:39];
+    a.act_bank_hold   = raw[25];
+    a.act_row_base    = raw[24:17];
+    a.act_scale_shift = raw[16:12];
+    a.act_num_rows    = raw[7:0];
     return a;
   endfunction
 

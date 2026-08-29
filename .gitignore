@@ -40,6 +40,3 @@ vivado_pid*.str
 *.bin
 *.dcp
 .nvim
-
-mnist_pngs/
-

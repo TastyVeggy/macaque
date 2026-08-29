@@ -27,7 +27,11 @@ module dma_lane (
     output npu_pkg::buffer_type_t                               load_target,
     output logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
     output logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
-    input  logic                                                load_done,
+
+    output logic [3:0] load_valid_bytes_per_row,
+    output logic [7:0] load_input_rows,
+
+    input logic load_done,
 
     // Bank selects (compute lane owns this, owns which bank the SA reads).
     // The DMA always loads the INACTIVE bank (~bank_sel) and never toggles.
@@ -50,12 +54,12 @@ module dma_lane (
 
   logic busy_r;
 
-  npu_pkg::decoded_instr_t d_dma;
-  assign d_dma = npu_pkg::decode_instr(fifo_data);
+  npu_pkg::opcode_t d_dma_opcode;
+  assign d_dma_opcode = npu_pkg::decode_opcode(fifo_data);
 
   logic dma_can_load_this;
   always_comb begin
-    unique case (d_dma.opcode)
+    unique case (d_dma_opcode)
       npu_pkg::OP_LOAD_WEIGHT: dma_can_load_this = dma_weight_can_load;
       npu_pkg::OP_LOAD_BIAS:   dma_can_load_this = dma_bias_can_load;
       npu_pkg::OP_LOAD_INPUT:  dma_can_load_this = dma_act_can_load;
@@ -66,7 +70,7 @@ module dma_lane (
   // Which inactive bank will be loaded
   logic cur_loaded_bank;
   always_comb begin
-    unique case (d_dma.opcode)
+    unique case (d_dma_opcode)
       npu_pkg::OP_LOAD_WEIGHT: cur_loaded_bank = ~comp_weight_bank_sel;
       npu_pkg::OP_LOAD_BIAS:   cur_loaded_bank = ~comp_bias_bank_sel;
       npu_pkg::OP_LOAD_INPUT:  cur_loaded_bank = ~comp_act_bank_sel;
@@ -76,7 +80,7 @@ module dma_lane (
 
   npu_pkg::buffer_type_t cur_buf_type;
   always_comb begin
-    unique case (d_dma.opcode)
+    unique case (d_dma_opcode)
       npu_pkg::OP_LOAD_WEIGHT: cur_buf_type = npu_pkg::BUF_WEIGHT;
       npu_pkg::OP_LOAD_BIAS:   cur_buf_type = npu_pkg::BUF_BIAS;
       npu_pkg::OP_LOAD_INPUT:  cur_buf_type = npu_pkg::BUF_ACT;
@@ -88,7 +92,7 @@ module dma_lane (
   // Combinational so the wrapper/compute lane can arbitrate in the same cycle.
   assign dma_issue =
       (state == IDLE) && !fifo_empty &&
-      (d_dma.opcode inside {
+      (d_dma_opcode inside {
         npu_pkg::OP_LOAD_WEIGHT,
         npu_pkg::OP_LOAD_BIAS,
         npu_pkg::OP_LOAD_INPUT}) &&
@@ -107,19 +111,21 @@ module dma_lane (
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      state                <= IDLE;
-      fifo_pop             <= '0;
-      load_req             <= '0;
-      load_target          <= npu_pkg::BUF_WEIGHT;
-      ddr3_addr            <= '0;
-      byte_count           <= '0;
-      dma_load_done_notify <= '0;
-      dma_load_buf_type    <= npu_pkg::BUF_WEIGHT;
-      dma_load_bank        <= '0;
-      sync_reached         <= '0;
-      busy_r               <= '0;
-      issue_buf_type       <= npu_pkg::BUF_WEIGHT;
-      issue_loaded_bank    <= '0;
+      state                    <= IDLE;
+      fifo_pop                 <= '0;
+      load_req                 <= '0;
+      load_target              <= npu_pkg::BUF_WEIGHT;
+      ddr3_addr                <= '0;
+      byte_count               <= '0;
+      load_valid_bytes_per_row <= '0;
+      load_input_rows          <= '0;
+      dma_load_done_notify     <= '0;
+      dma_load_buf_type        <= npu_pkg::BUF_WEIGHT;
+      dma_load_bank            <= '0;
+      sync_reached             <= '0;
+      busy_r                   <= '0;
+      issue_buf_type           <= npu_pkg::BUF_WEIGHT;
+      issue_loaded_bank        <= '0;
     end else begin
       fifo_pop             <= '0;
       load_req             <= '0;
@@ -131,21 +137,24 @@ module dma_lane (
 
         IDLE: begin
           if (!fifo_empty) begin
-            if (d_dma.opcode == npu_pkg::OP_SYNC) begin
+            if (d_dma_opcode == npu_pkg::OP_SYNC) begin
               fifo_pop     <= 1'b1;
               sync_reached <= '1;
               state        <= SYNC;
-            end else if (d_dma.opcode inside {
+            end else if (d_dma_opcode inside {
               npu_pkg::OP_LOAD_WEIGHT,
               npu_pkg::OP_LOAD_BIAS,
               npu_pkg::OP_LOAD_INPUT}) begin
 
               if (dma_can_load_this && !store_req) begin
+                automatic npu_pkg::load_instr_t d_load = npu_pkg::decode_load_instr(fifo_data);
                 fifo_pop <= 1'b1;
                 load_req <= 1'b1;
                 load_target <= cur_buf_type;
-                ddr3_addr <= d_dma.ddr3_addr;
-                byte_count <= d_dma.byte_count;
+                ddr3_addr <= d_load.ddr3_addr;
+                byte_count <= d_load.byte_count;
+                load_valid_bytes_per_row <= d_load.valid_bytes_per_row;
+                load_input_rows <= d_load.input_rows;
                 busy_r <= 1'b1;
                 issue_buf_type <= cur_buf_type;
                 issue_loaded_bank <= cur_loaded_bank;

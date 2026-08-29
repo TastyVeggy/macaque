@@ -13,6 +13,8 @@ async def reset(dut):
     dut.store_req.value = 0
     dut.load_target.value = 0
     dut.byte_count.value = 0
+    dut.load_valid_bytes_per_row.value = 0
+    dut.load_input_rows.value = 0
     dut.s_axis_tvalid.value = 0
     dut.s_axis_tdata.value = 0
     dut.m_axis_tready.value = 1
@@ -268,6 +270,67 @@ async def test_load_back_to_back(dut):
     _, bvec = bb_mon.writes[0]
     for c in range(14):
         assert bvec[c] == (base + c * 4), f"bias lane {c}: got {bvec[c]:#x}"
+
+
+@cocotb.test()
+async def test_load_input_unpadded(dut):
+    """Plain, non-padded LOAD_INPUT (load_valid_bytes_per_row=0): must behave
+    exactly like the legacy weight/bias loads above - never exercised by any
+    other test, since they only cover OP_WEIGHT/OP_BIAS."""
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset(dut)
+    bc = 196  # 14 full rows
+    mon = LoadWriteMonitor(dut, "ab")
+    cocotb.start_soon(mon.run())
+
+    dut.load_target.value = OP_ACT
+    dut.byte_count.value = bc
+    await pulse(dut, dut.load_req)
+    data = [(i) & 0xFF for i in range(bc)]
+    assert await load_until_done(dut, data), "load_done never asserted"
+    await ClockCycles(dut.clk, 2)
+
+    rows = ref_weight_rows(bc)
+    assert len(mon.writes) == 14, f"expected 14 rows written, got {len(mon.writes)}"
+    for waddr, vec in mon.writes:
+        assert vec == rows[waddr], f"row {waddr}: got {vec}, expected {rows[waddr]}"
+
+
+@cocotb.test()
+async def test_load_input_padded_row(dut):
+    """LOAD_INPUT with the new DMA zero-injection field set: K isn't a
+    multiple of 14, so only the first `valid` bytes of every row are real -
+    dense-packed in DDR3 back to back, no per-row padding gap, matching
+    byte_count = rows * valid. The adapter must pop each row after just `valid`
+    real bytes and zero-fill lanes [valid, 14) itself"""
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset(dut)
+
+    rows = 3
+    valid = 6
+    mon = LoadWriteMonitor(dut, "ab")
+    cocotb.start_soon(mon.run())
+
+    row_real = [[1 + r * 10 + c for c in range(valid)] for r in range(rows)]
+    data = [b for row in row_real for b in row]  # dense, no padding gap
+
+    dut.load_target.value = OP_ACT
+    dut.byte_count.value = rows * valid
+    dut.load_valid_bytes_per_row.value = valid
+    dut.load_input_rows.value = rows
+    await pulse(dut, dut.load_req)
+    assert await load_until_done(dut, data), "padded load never done"
+    await ClockCycles(dut.clk, 2)
+
+    assert len(mon.writes) == rows, f"expected {rows} rows written, got {len(mon.writes)}"
+    for r, (waddr, vec) in enumerate(mon.writes):
+        assert waddr == r, f"row {r}: waddr {waddr}"
+        assert vec[:valid] == row_real[r], (
+            f"row {r} real lanes: got {vec[:valid]}, expected {row_real[r]}"
+        )
+        assert vec[valid:] == [0] * (14 - valid), (
+            f"row {r} padding lanes should be zero, got {vec[valid:]}"
+        )
 
 
 @cocotb.test()

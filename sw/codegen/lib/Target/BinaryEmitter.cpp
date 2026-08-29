@@ -11,63 +11,43 @@ namespace isa = ::macaque::common::isa;
 
 namespace {
 
-FailureOr<isa::Instruction> toInstruction(Operation &op) {
-  return TypeSwitch<Operation *, FailureOr<isa::Instruction>>(&op)
+FailureOr<uint64_t> encodeInstruction(Operation &op) {
+  return TypeSwitch<Operation *, FailureOr<uint64_t>>(&op)
       .Case<LoadWeightOp>([](LoadWeightOp o) {
-        return isa::Instruction{isa::Opcode::LoadWeight,
-                                /*acc_mode=*/false,
-                                /*target=*/0,
-                                o.getDdr3Addr(),
-                                o.getByteCount(),
-                                /*reserved=*/0,
-                                /*tile_params=*/0};
+        return isa::Instruction{isa::Opcode::LoadWeight, o.getDdr3Addr(),
+                                o.getByteCount()}
+            .encode();
       })
       .Case<LoadBiasOp>([](LoadBiasOp o) {
-        return isa::Instruction{isa::Opcode::LoadBias, /*acc_mode=*/false,
-                                /*target=*/0,          o.getDdr3Addr(),
-                                o.getByteCount(),      /*reserved=*/0,
-                                /*tile_params=*/0};
+        return isa::Instruction{isa::Opcode::LoadBias, o.getDdr3Addr(),
+                                o.getByteCount()}
+            .encode();
       })
       .Case<LoadInputOp>([](LoadInputOp o) {
-        return isa::Instruction{isa::Opcode::LoadInput, /*acc_mode=*/false,
-                                /*target=*/0,           o.getDdr3Addr(),
-                                o.getByteCount(),       /*reserved=*/0,
-                                /*tile_params=*/0};
+        return isa::Instruction{isa::Opcode::LoadInput, o.getDdr3Addr(),
+                                o.getByteCount(),
+                                static_cast<uint8_t>(o.getValidBytesPerRow()),
+                                static_cast<uint8_t>(o.getInputRows())}
+            .encode();
       })
       .Case<MatmulOp>([](MatmulOp o) {
-        return isa::Instruction{
-            isa::Opcode::Matmul,
-            o.getAccMode(),
-            /*target=*/static_cast<uint8_t>(o.getWeightHold() ? 1 : 0),
-            /*ddr3_addr=*/o.getMatRowBase(),
-            /*byte_count=*/0,
-            /*reserved=*/0,
-            static_cast<uint8_t>(o.getTileParams())};
+        return isa::encodeMatmul({o.getAccMode(), o.getWeightHold(),
+                                  o.getMatRowBase(),
+                                  static_cast<uint8_t>(o.getTileParams())});
       })
       .Case<ActivateOp>([](ActivateOp o) {
-        const uint16_t byteCount =
-            static_cast<uint16_t>(o.getActScaleShift() & 0x1F) |
-            static_cast<uint16_t>((o.getActRowBase() & 0xFF) << 5) |
-            static_cast<uint16_t>((o.getActBankHold() ? 1 : 0) << 13);
-        const uint32_t ddr3Addr = (o.getActScaleM() & 0x1FFFFu) << 11;
-        return isa::Instruction{
-            isa::Opcode::Activate,
-            /*acc_mode=*/false,    o.getActFunc(),   ddr3Addr, byteCount,
-            /*reserved=*/0,        o.getActNumRows()};
+        return isa::encodeActivate({static_cast<isa::ActFunc>(o.getActFunc()),
+                                    o.getActScaleM(), o.getActBankHold(),
+                                    o.getActRowBase(), o.getActScaleShift(),
+                                    o.getActNumRows()});
       })
       .Case<StoreOp>([](StoreOp o) {
-        return isa::Instruction{isa::Opcode::Store, /*acc_mode=*/false,
-                                /*target=*/0,       o.getDdr3Addr(),
-                                o.getByteCount(),   /*reserved=*/0,
-                                /*tile_params=*/0};
+        return isa::Instruction{isa::Opcode::Store, o.getDdr3Addr(),
+                                o.getByteCount()}
+            .encode();
       })
-      .Case<SyncOp>([](SyncOp) {
-        return isa::Instruction{isa::Opcode::Sync, /*acc_mode=*/false,
-                                /*target=*/0,      /*ddr3_addr=*/0,
-                                /*byte_count=*/0,  /*reserved=*/0,
-                                /*tile_params=*/0};
-      })
-      .Default([](Operation *o) -> FailureOr<isa::Instruction> {
+      .Case<SyncOp>([](SyncOp) { return isa::encodeOpcode(isa::Opcode::Sync); })
+      .Default([](Operation *o) -> FailureOr<uint64_t> {
         return o->emitOpError("unsupported op for binary emission - not a "
                               "macaque instruction op");
       });
@@ -81,10 +61,10 @@ FailureOr<std::vector<uint64_t>> emitBinary(Block &block) {
   std::vector<uint64_t> words;
   words.reserve(block.getOperations().size());
   for (Operation &op : block) {
-    FailureOr<isa::Instruction> instr = toInstruction(op);
-    if (failed(instr))
+    FailureOr<uint64_t> word = encodeInstruction(op);
+    if (failed(word))
       return failure();
-    words.push_back(instr->encode());
+    words.push_back(*word);
   }
   return words;
 }

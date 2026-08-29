@@ -39,9 +39,8 @@ module fetch_unit (
 
   assign prog_end = instr_base + instr_len * 8;
 
-  // Decoded instruction
-  npu_pkg::decoded_instr_t d_instr;
-  assign d_instr = npu_pkg::decode_instr(im_data);
+  npu_pkg::opcode_t d_instr_opcode;
+  assign d_instr_opcode = npu_pkg::decode_opcode(im_data);
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -87,7 +86,7 @@ module fetch_unit (
 
         PUSH: begin
           busy <= '1;
-          case (d_instr.opcode)
+          case (d_instr_opcode)
 
             npu_pkg::OP_LOAD_WEIGHT, npu_pkg::OP_LOAD_BIAS, npu_pkg::OP_LOAD_INPUT: begin
               if (!dma_fifo_full) begin

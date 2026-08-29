@@ -47,11 +47,23 @@ def Macaque_LoadInputOp : Macaque_Op<"load_input"> {
     Corresponds to OP_LOAD_INPUT (opcode 0x2).
     ddr3_addr occupies instruction bits [55:28] (28 bits) and byte_count
     occupies [27:12] (16 bits).
+
+    valid_bytes_per_row ([11:8]) and input_rows ([7:0])
+    together drive DMA-level zero-injection for a runtime activation input
+    whose K isn't a multiple of the 14-wide tile: valid_bytes_per_row = 0
+    (the default) disables this and byte_count keeps its normal meaning, the
+    full padded transfer size. A nonzero valid_bytes_per_row means every one
+    of this transfer's input_rows rows only has that many real bytes in
+    DDR3 while byte_count must then be the true total
+    (input_rows * valid_bytes_per_row) instead, and the DMA zero-fills the
+    rest of each row on the way into the activation buffer.
   }];
 
   let arguments = (ins
     UI32Attr:$ddr3_addr,
-    UI16Attr:$byte_count
+    UI16Attr:$byte_count,
+    DefaultValuedAttr<UI8Attr, "0">:$valid_bytes_per_row,
+    DefaultValuedAttr<UI8Attr, "0">:$input_rows
   );
 
   let assemblyFormat = "attr-dict";

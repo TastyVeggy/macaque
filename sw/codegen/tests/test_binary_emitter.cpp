@@ -37,8 +37,7 @@ TEST_F(BinaryEmitterTest, LoadWeightMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{
-      isa::Opcode::LoadWeight, false, 0, 0x123'4567u, 200, 0, 0};
+  isa::Instruction expected{isa::Opcode::LoadWeight, 0x123'4567u, 200};
   EXPECT_EQ((*words)[0], expected.encode());
 }
 
@@ -50,8 +49,10 @@ TEST_F(BinaryEmitterTest, MatmulMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Matmul, true, 0, 0, 0, 0, 14};
-  EXPECT_EQ((*words)[0], expected.encode());
+  EXPECT_EQ((*words)[0], isa::encodeMatmul({/*acc_mode=*/true,
+                                            /*weight_hold=*/false,
+                                            /*mat_row_base=*/0,
+                                            /*tile_params=*/14}));
 }
 
 TEST_F(BinaryEmitterTest, ActivateMatchesHandBuiltInstruction) {
@@ -63,9 +64,10 @@ TEST_F(BinaryEmitterTest, ActivateMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{
-      isa::Opcode::Activate, false, 1, 0x1ABCDu << 11, 9, 0, 64};
-  EXPECT_EQ((*words)[0], expected.encode());
+  EXPECT_EQ((*words)[0], isa::encodeActivate(
+                             {isa::ActFunc::LeakyRelu, /*act_scale_m=*/0x1ABCDu,
+                              /*act_bank_hold=*/false, /*act_row_base=*/0,
+                              /*act_scale_shift=*/9, /*act_num_rows=*/64}));
 }
 
 TEST_F(BinaryEmitterTest, SyncMatchesHandBuiltInstruction) {
@@ -75,8 +77,7 @@ TEST_F(BinaryEmitterTest, SyncMatchesHandBuiltInstruction) {
   ASSERT_TRUE(succeeded(words));
   ASSERT_EQ(words->size(), 1u);
 
-  isa::Instruction expected{isa::Opcode::Sync, false, 0, 0, 0, 0, 0};
-  EXPECT_EQ((*words)[0], expected.encode());
+  EXPECT_EQ((*words)[0], isa::encodeOpcode(isa::Opcode::Sync));
 }
 
 TEST_F(BinaryEmitterTest, EmitsWordsInProgramOrder) {

@@ -216,6 +216,101 @@ TEST(TosaToMacaque, LowersBlockArgumentActivationToLoadInput) {
   EXPECT_NE(loadWeight.getDdr3Addr(), loadInput.getDdr3Addr());
 }
 
+TEST(TosaToMacaque, PartialKRuntimeInputGetsDmaZeroInjection) {
+  // K=6 (not a multiple of 14, single K-tile since 6 <= 14) on a genuine
+  // runtime (block-argument) input: the compiler tell LOAD_INPUT to
+  // DMA-zero-inject the tail at load time.
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto aTy = RankedTensorType::get({1, 2, 6}, i8Ty);
+  BlockArgument a = block.addArgument(aTy, loc);
+
+  auto bTy = RankedTensorType::get({1, 6, 14}, i8Ty);
+  auto b = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, static_cast<int8_t>(2)));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
+  auto matmul = tosa::MatMulOp::create(builder, loc, outTy, a, b, aZp, bZp);
+  buildRescale(builder, loc, matmul.getResult(), i8Ty, /*multiplier=*/1,
+               /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  LoadInputOp loadInput;
+  for (Operation &op : block)
+    if (auto o = dyn_cast<LoadInputOp>(op))
+      loadInput = o;
+
+  ASSERT_TRUE(loadInput);
+  EXPECT_EQ(loadInput.getValidBytesPerRow(), 6u);
+  EXPECT_EQ(loadInput.getInputRows(), 2u);
+  EXPECT_EQ(loadInput.getByteCount(), 12u);
+}
+
+TEST(TosaToMacaque, OnlyThePartialKTileGetsDmaZeroInjection) {
+  // K=20 = one full 14-wide tile plus a 6-wide boundary tile (2 K-tiles,
+  // the allocateBatchChunkInputAddrs/emitBatchMatmuls path). Only the
+  // second (partial) K-tile's LOAD_INPUT should carry the zero-injection
+  // fields - the first, fully-real tile must stay byte-for-byte identical
+  // to today's padded-byte_count encoding.
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto aTy = RankedTensorType::get({1, 2, 20}, i8Ty);
+  BlockArgument a = block.addArgument(aTy, loc);
+
+  auto bTy = RankedTensorType::get({1, 20, 14}, i8Ty);
+  auto b = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, static_cast<int8_t>(2)));
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto aZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto outTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
+  auto matmul = tosa::MatMulOp::create(builder, loc, outTy, a, b, aZp, bZp);
+  buildRescale(builder, loc, matmul.getResult(), i8Ty, /*multiplier=*/1,
+               /*shift=*/0);
+
+  ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
+
+  SmallVector<LoadInputOp> loadInputs;
+  for (Operation &op : block)
+    if (auto o = dyn_cast<LoadInputOp>(op))
+      loadInputs.push_back(o);
+
+  ASSERT_EQ(loadInputs.size(), 2u);
+
+  // K-tile 0: fully real 14 columns - zero-injection disabled, byte_count
+  // stays the ordinary padded size (2 rows x 14 bytes).
+  EXPECT_EQ(loadInputs[0].getValidBytesPerRow(), 0u);
+  EXPECT_EQ(loadInputs[0].getInputRows(), 0u);
+  EXPECT_EQ(loadInputs[0].getByteCount(), 2u * 14u);
+
+  // K-tile 1: 6 real columns (20 - 14) - zero-injection enabled, byte_count
+  // becomes the dense total (2 rows x 6 bytes).
+  EXPECT_EQ(loadInputs[1].getValidBytesPerRow(), 6u);
+  EXPECT_EQ(loadInputs[1].getInputRows(), 2u);
+  EXPECT_EQ(loadInputs[1].getByteCount(), 2u * 6u);
+}
+
 TEST(TosaToMacaque, UnhandledActivationProducerFailsToConvert) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();

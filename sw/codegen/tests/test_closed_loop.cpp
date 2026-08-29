@@ -999,6 +999,167 @@ TEST(ClosedLoop, PartialKTileZeroPadsCorrectly) {
 }
 
 //===----------------------------------------------------------------------===//
+// 4a. Partial K-tile, RUNTIME (block-argument) input - DMA zero-injection
+// closed loop.
+//===----------------------------------------------------------------------===//
+
+TEST(ClosedLoop, PartialKRuntimeInputZeroInjectedByDma) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  auto i8Ty = builder.getIntegerType(8);
+  auto i32Ty = builder.getIntegerType(32);
+  auto aTy = RankedTensorType::get({1, kPartialRows, kPartialK}, i8Ty);
+  auto bTy = RankedTensorType::get({1, kPartialK, 14}, i8Ty);
+  auto zpTy = RankedTensorType::get({1}, i8Ty);
+  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
+
+  // The only difference from PartialKTileZeroPadsCorrectly: a genuine
+  // runtime input (block argument), not a tosa.const.
+  BlockArgument a = block.addArgument(aTy, loc);
+
+  std::vector<int8_t> bData;
+  for (int64_t k = 0; k < kPartialK; ++k)
+    for (int c = 0; c < 14; ++c)
+      bData.push_back(partialWeight(static_cast<int>(k), c));
+  auto b = tosa::ConstOp::create(
+      builder, loc, bTy, DenseElementsAttr::get(bTy, ArrayRef<int8_t>(bData)));
+
+  auto aZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto bZp = tosa::ConstOp::create(
+      builder, loc, zpTy, DenseElementsAttr::get(zpTy, static_cast<int8_t>(0)));
+  auto matmulOutTy = RankedTensorType::get({1, kPartialRows, 14}, i32Ty);
+  auto matmul =
+      tosa::MatMulOp::create(builder, loc, matmulOutTy, a, b.getResult(),
+                             aZp.getResult(), bZp.getResult());
+
+  std::vector<int32_t> biasData;
+  for (int c = 0; c < 14; ++c)
+    biasData.push_back(partialBias(c));
+  auto bias = tosa::ConstOp::create(
+      builder, loc, biasTy,
+      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+  auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
+                                 bias.getResult());
+
+  auto multiplierConst = tosa::ConstOp::create(
+      builder, loc, RankedTensorType::get({1}, i32Ty),
+      DenseElementsAttr::get(RankedTensorType::get({1}, i32Ty),
+                             static_cast<int32_t>(kPartialMult)));
+  auto shiftConst = tosa::ConstOp::create(
+      builder, loc, zpTy,
+      DenseElementsAttr::get(zpTy, static_cast<int8_t>(kPartialShift)));
+  auto rescaleOutTy = RankedTensorType::get({1, kPartialRows, 14}, i8Ty);
+  tosa::RescaleOp::create(builder, loc, rescaleOutTy, add.getResult(),
+                          multiplierConst.getResult(), shiftConst.getResult(),
+                          aZp.getResult(), aZp.getResult(),
+                          /*scale32=*/true, tosa::RoundingMode::SINGLE_ROUND,
+                          /*perChannel=*/false, /*inputUnsigned=*/false,
+                          /*outputUnsigned=*/false);
+
+  ASSERT_TRUE(succeeded(conversion::lowerTosaToMacaque(block)));
+
+  SmallVector<LoadWeightOp> loadWeights;
+  SmallVector<LoadBiasOp> loadBiases;
+  SmallVector<LoadInputOp> loadInputs;
+  SmallVector<StoreOp> stores;
+  for (Operation &op : block) {
+    if (auto o = dyn_cast<LoadWeightOp>(op))
+      loadWeights.push_back(o);
+    if (auto o = dyn_cast<LoadBiasOp>(op))
+      loadBiases.push_back(o);
+    if (auto o = dyn_cast<LoadInputOp>(op))
+      loadInputs.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op))
+      stores.push_back(o);
+  }
+  ASSERT_EQ(loadWeights.size(), 2u);
+  ASSERT_EQ(loadBiases.size(), 1u);
+  ASSERT_EQ(loadInputs.size(), 2u);
+  ASSERT_EQ(stores.size(), 1u);
+
+  // K-tile 0 is fully real - zero-injection disabled. K-tile 1 is the
+  // boundary tile: 6 real columns (20-14) - zero-injection enabled.
+  EXPECT_EQ(loadInputs[0].getValidBytesPerRow(), 0u);
+  EXPECT_EQ(loadInputs[1].getValidBytesPerRow(), 6u);
+  EXPECT_EQ(loadInputs[1].getInputRows(), static_cast<uint32_t>(kPartialRows));
+
+  auto words = target::emitBinary(block);
+  ASSERT_TRUE(succeeded(words));
+
+  sim::Simulator simulator(/*ddr_bytes=*/8192);
+
+  // Deliberately pre-fill all of DDR3 with a nonzero pattern before staging
+  // anything real. If the simulator's LoadInput zero-fill were missing or
+  // broken (e.g. reverted to the old byte_count/kArraySize row count), this
+  // garbage would leak into the boundary tile's padding lanes and the
+  // result would not match partialExpected, which sums only the real K=20 -
+  // this test would then fail instead of passing by coincidence.
+  std::vector<uint8_t> garbage(8192, 0xEE);
+  simulator.write(0, garbage.data(), garbage.size());
+
+  std::vector<uint8_t> w0;
+  for (int k = 0; k < 14; ++k)
+    for (int c = 0; c < 14; ++c)
+      w0.push_back(static_cast<uint8_t>(partialWeight(k, c)));
+  simulator.write(loadWeights[0].getDdr3Addr(), w0.data(), w0.size());
+
+  std::vector<uint8_t> w1;
+  for (int localK = 0; localK < 14; ++localK) {
+    const int globalK = 14 + localK;
+    for (int c = 0; c < 14; ++c) {
+      const int8_t v = globalK < kPartialK ? partialWeight(globalK, c) : 0;
+      w1.push_back(static_cast<uint8_t>(v));
+    }
+  }
+  simulator.write(loadWeights[1].getDdr3Addr(), w1.data(), w1.size());
+
+  std::vector<uint8_t> biasBytes;
+  for (int c = 0; c < 14; ++c) {
+    int32_t v = partialBias(c);
+    for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
+      biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
+  }
+  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
+                  biasBytes.size());
+
+  // Tile 0: a full, real 14-wide K-slice - dense, matching what
+  // Device::stageInput actually writes for a runtime input.
+  std::vector<uint8_t> a0;
+  for (int r = 0; r < kPartialRows; ++r)
+    for (int k = 0; k < 14; ++k)
+      a0.push_back(static_cast<uint8_t>(partialAct(r, k)));
+  simulator.write(loadInputs[0].getDdr3Addr(), a0.data(), a0.size());
+
+  // Tile 1: the boundary tile - only the 6 real columns are staged, densely
+  // packed with no padding tail written at all - the simulator's LoadInput
+  // must supply the rest as zero on its own.
+  std::vector<uint8_t> a1;
+  for (int r = 0; r < kPartialRows; ++r)
+    for (int localK = 0; localK < 6; ++localK)
+      a1.push_back(static_cast<uint8_t>(partialAct(r, 14 + localK)));
+  simulator.write(loadInputs[1].getDdr3Addr(), a1.data(), a1.size());
+
+  simulator.run(*words);
+
+  std::vector<uint8_t> result =
+      simulator.read(stores[0].getDdr3Addr(), kPartialRows * 14);
+  ASSERT_EQ(result.size(), static_cast<size_t>(kPartialRows * 14));
+  for (int r = 0; r < kPartialRows; ++r) {
+    for (int c = 0; c < 14; ++c) {
+      EXPECT_EQ(result[r * 14 + c], partialExpected(r, c))
+          << "row " << r << " channel " << c;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // 4b. Partial N-tile, whole-pipeline closed loop, driven by the compiler's
 // own DataSegment output instead of hand-constructed bytes.
 //

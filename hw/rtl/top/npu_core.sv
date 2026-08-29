@@ -132,6 +132,8 @@ module npu_core (
   logic [npu_pkg::ISA_DDR_ADDR_W-1:0] seq_ddr3_addr;
   logic [npu_pkg::ISA_BYTE_CNT_W-1:0] seq_byte_count;
   npu_pkg::buffer_type_t load_target;
+  logic [3:0] load_valid_bytes_per_row;
+  logic [7:0] load_input_rows;
 
   assign start_pulse = npu_start;
 
@@ -159,6 +161,8 @@ module npu_core (
       .load_target,
       .ddr3_addr (seq_ddr3_addr),
       .byte_count(seq_byte_count),
+      .load_valid_bytes_per_row,
+      .load_input_rows,
       .acc_mode,
       .tile_params,
       .act_scale_m,
@@ -317,6 +321,8 @@ module npu_core (
       .load_target,
       .byte_count(seq_byte_count),
       .ddr3_addr (seq_ddr3_addr),
+      .load_valid_bytes_per_row,
+      .load_input_rows,
       .load_done,
       .store_done,
       .dma_bytes_rd_this_cycle,

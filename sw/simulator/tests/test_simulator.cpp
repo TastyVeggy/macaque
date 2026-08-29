@@ -9,7 +9,11 @@
 #include "macaque/sim/simulator.hpp"
 
 using macaque::common::isa::ActFunc;
+using macaque::common::isa::ActivateFields;
+using macaque::common::isa::encodeActivate;
+using macaque::common::isa::encodeMatmul;
 using macaque::common::isa::Instruction;
+using macaque::common::isa::MatmulFields;
 using macaque::common::isa::Opcode;
 using macaque::sim::kArraySize;
 using macaque::sim::requantizeAndActivate;
@@ -78,38 +82,23 @@ TEST(Engine, LoadMatmulActivateStore) {
   sim.write(kBiasAddr, biases.data(), biases.size());
   sim.write(kActAddr, acts.data(), acts.size());
 
-  const Instruction load_w{Opcode::LoadWeight,
-                           false,
-                           0,
-                           kWeightAddr,
-                           static_cast<uint16_t>(kByteCount),
-                           0,
-                           0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0, 0};
-  const Instruction load_a{Opcode::LoadInput,
-                           false,
-                           0,
-                           kActAddr,
-                           static_cast<uint16_t>(kByteCount),
-                           0,
-                           0};
-  const Instruction mm{
-      Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
-  const Instruction act{
-      Opcode::Activate, false, static_cast<uint8_t>(ActFunc::Relu), kM << 11,
-      kShift,           0,     static_cast<uint8_t>(kArraySize)};
-  const Instruction store{Opcode::Store,
-                          false,
-                          0,
-                          kOutAddr,
-                          static_cast<uint16_t>(kByteCount),
-                          0,
-                          0};
+  const Instruction load_w{Opcode::LoadWeight, kWeightAddr,
+                           static_cast<uint16_t>(kByteCount)};
+  const Instruction load_b{Opcode::LoadBias, kBiasAddr, 14 * 4};
+  const Instruction load_a{Opcode::LoadInput, kActAddr,
+                           static_cast<uint16_t>(kByteCount)};
+  const uint64_t mm =
+      encodeMatmul({/*acc_mode=*/false, /*weight_hold=*/false,
+                    /*mat_row_base=*/0, static_cast<uint8_t>(kArraySize)});
+  const uint64_t act = encodeActivate(
+      {ActFunc::Relu, kM, /*act_bank_hold=*/false, /*act_row_base=*/0,
+       static_cast<uint8_t>(kShift), static_cast<uint8_t>(kArraySize)});
+  const Instruction store{Opcode::Store, kOutAddr,
+                          static_cast<uint16_t>(kByteCount)};
 
-  std::vector<uint64_t> program;
-  for (const Instruction &ins : {load_w, load_b, load_a, mm, act, store}) {
-    program.push_back(ins.encode());
-  }
+  const std::vector<uint64_t> program{
+      load_w.encode(), load_b.encode(), load_a.encode(), mm, act,
+      store.encode()};
 
   sim.run(program);
 
@@ -153,38 +142,23 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
   sim.write(kBiasAddr, biases.data(), biases.size());
   sim.write(kActAddr, acts.data(), acts.size());
 
-  const Instruction load_w{Opcode::LoadWeight,
-                           false,
-                           0,
-                           kWeightAddr,
-                           static_cast<uint16_t>(kByteCount),
-                           0,
-                           0};
-  const Instruction load_b{Opcode::LoadBias, false, 0, kBiasAddr, 14 * 4, 0, 0};
-  const Instruction load_a{Opcode::LoadInput,
-                           false,
-                           0,
-                           kActAddr,
-                           static_cast<uint16_t>(kByteCount),
-                           0,
-                           0};
-  const Instruction mm{
-      Opcode::Matmul, false, 0, 0, 0, 0, static_cast<uint8_t>(kArraySize)};
-  const Instruction act{
-      Opcode::Activate, false, static_cast<uint8_t>(ActFunc::Relu), kM << 11,
-      kShift,           0,     static_cast<uint8_t>(kArraySize)};
-  const Instruction store{Opcode::Store,
-                          false,
-                          0,
-                          kOutAddr,
-                          static_cast<uint16_t>(kByteCount),
-                          0,
-                          0};
+  const Instruction load_w{Opcode::LoadWeight, kWeightAddr,
+                           static_cast<uint16_t>(kByteCount)};
+  const Instruction load_b{Opcode::LoadBias, kBiasAddr, 14 * 4};
+  const Instruction load_a{Opcode::LoadInput, kActAddr,
+                           static_cast<uint16_t>(kByteCount)};
+  const uint64_t mm =
+      encodeMatmul({/*acc_mode=*/false, /*weight_hold=*/false,
+                    /*mat_row_base=*/0, static_cast<uint8_t>(kArraySize)});
+  const uint64_t act = encodeActivate(
+      {ActFunc::Relu, kM, /*act_bank_hold=*/false, /*act_row_base=*/0,
+       static_cast<uint8_t>(kShift), static_cast<uint8_t>(kArraySize)});
+  const Instruction store{Opcode::Store, kOutAddr,
+                          static_cast<uint16_t>(kByteCount)};
 
-  std::vector<uint64_t> program;
-  for (const Instruction &ins : {load_w, load_b, load_a, mm, act, store}) {
-    program.push_back(ins.encode());
-  }
+  const std::vector<uint64_t> program{
+      load_w.encode(), load_b.encode(), load_a.encode(), mm, act,
+      store.encode()};
 
   sim.run(program);
 

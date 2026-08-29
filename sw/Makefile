@@ -32,7 +32,7 @@ simulator: configure
 
 runtime: configure
 	cmake --build --preset $(PRESET) --target macaque_runtime --target macaque --target test_runtime \
-	    --target infer_image
+	    --target infer_digit
 
 test-common: common
 	ctest --preset $(PRESET) -R '^instruction_encoding$$'

@@ -24,6 +24,13 @@ LogicalResult LoadInputOp::verify() {
   if (getDdr3Addr() >= (1u << 28))
     return emitOpError("ddr3_addr must fit in 28 bits [55:28], got ")
            << getDdr3Addr();
+  if (getValidBytesPerRow() >= 16)
+    return emitOpError(
+               "valid_bytes_per_row must fit reserved's 4 bits [11:8], got ")
+           << getValidBytesPerRow();
+  if (getValidBytesPerRow() != 0 && getInputRows() == 0)
+    return emitOpError(
+        "input_rows must be nonzero when valid_bytes_per_row is set");
   return success();
 }
 

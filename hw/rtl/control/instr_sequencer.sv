@@ -38,15 +38,18 @@ module instr_sequencer (
     output logic                act_bank_hold,
 
     // LOAD/STORE: to DMA
-    output logic                                                load_req,
-    output logic                                                store_req,
-    output npu_pkg::buffer_type_t                               load_target,
-    output logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
-    output logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
-    output logic                                                acc_mode,
-    output logic                  [                       11:0] tile_params,
-    input  logic                                                load_done,
-    input  logic                                                store_done,
+    output logic                         load_req,
+    output logic                         store_req,
+    output npu_pkg::buffer_type_t        load_target,
+    output logic                  [27:0] ddr3_addr,
+    output logic                  [15:0] byte_count,
+    output logic                         acc_mode,
+    output logic                  [11:0] tile_params,
+    output logic                  [ 3:0] load_valid_bytes_per_row,
+    output logic                  [ 7:0] load_input_rows,
+
+    input logic load_done,
+    input logic store_done,
 
     // Buffer read control during MATMUL
     output logic                wb_re,
@@ -95,22 +98,24 @@ module instr_sequencer (
   npu_pkg::buffer_type_t dma_load_buf_type;
   logic                  dma_load_bank;
   logic sync_reached_dma, sync_release;
-  logic                                                dma_load_req;
-  npu_pkg::buffer_type_t                               dma_load_target;
-  logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] dma_ddr3_addr;
-  logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] dma_byte_count;
+  logic                         dma_load_req;
+  npu_pkg::buffer_type_t        dma_load_target;
+  logic                  [27:0] dma_ddr3_addr;
+  logic                  [15:0] dma_byte_count;
+  logic                  [ 3:0] dma_load_valid_bytes_per_row;
+  logic                  [ 7:0] dma_load_input_rows;
 
   // Compute lane
-  logic                                                comp_lane_busy;
-  logic                                                comp_lane_stall;
-  logic                                                comp_mac_active;
-  logic                                                comp_error;
+  logic                         comp_lane_busy;
+  logic                         comp_lane_stall;
+  logic                         comp_mac_active;
+  logic                         comp_error;
   logic comp_matmul_start_notify, comp_matmul_drain_notify;
-  logic                               comp_weight_hold;
-  logic                               comp_store_req;
-  logic [npu_pkg::ISA_DDR_ADDR_W-1:0] comp_ddr3_addr;
-  logic [npu_pkg::ISA_BYTE_CNT_W-1:0] comp_byte_count;
-  logic                               sync_reached_comp;
+  logic        comp_weight_hold;
+  logic        comp_store_req;
+  logic [27:0] comp_ddr3_addr;
+  logic [15:0] comp_byte_count;
+  logic        sync_reached_comp;
 
   // Bank selects: owned by DMA lane
   logic int_weight_bank_sel, int_act_bank_sel, int_bias_bank_sel;
@@ -164,31 +169,33 @@ module instr_sequencer (
   );
 
   dma_lane dma_inst (
-      .clk                 (clk),
-      .rst                 (rst || reset),
-      .fifo_pop            (dma_fifo_pop),
-      .fifo_data           (dma_fifo_data),
-      .fifo_empty          (dma_fifo_empty),
-      .dma_weight_can_load (dma_weight_can_load),
-      .dma_bias_can_load   (dma_bias_can_load),
-      .dma_act_can_load    (dma_act_can_load),
-      .dma_load_done_notify(dma_load_done_notify),
-      .dma_load_buf_type   (dma_load_buf_type),
-      .dma_load_bank       (dma_load_bank),
-      .sync_reached        (sync_reached_dma),
-      .sync_release        (sync_release),
-      .load_req            (dma_load_req),
-      .load_target         (dma_load_target),
-      .ddr3_addr           (dma_ddr3_addr),
-      .byte_count          (dma_byte_count),
-      .load_done           (load_done),
-      .comp_weight_bank_sel(int_weight_bank_sel),
-      .comp_act_bank_sel   (int_act_bank_sel),
-      .comp_bias_bank_sel  (int_bias_bank_sel),
-      .dma_issue           (dma_issue),
-      .store_req           (comp_store_req),
-      .busy                (dma_lane_busy),
-      .stall               (dma_lane_stall)
+      .clk                     (clk),
+      .rst                     (rst || reset),
+      .fifo_pop                (dma_fifo_pop),
+      .fifo_data               (dma_fifo_data),
+      .fifo_empty              (dma_fifo_empty),
+      .dma_weight_can_load     (dma_weight_can_load),
+      .dma_bias_can_load       (dma_bias_can_load),
+      .dma_act_can_load        (dma_act_can_load),
+      .dma_load_done_notify    (dma_load_done_notify),
+      .dma_load_buf_type       (dma_load_buf_type),
+      .dma_load_bank           (dma_load_bank),
+      .sync_reached            (sync_reached_dma),
+      .sync_release            (sync_release),
+      .load_req                (dma_load_req),
+      .load_target             (dma_load_target),
+      .ddr3_addr               (dma_ddr3_addr),
+      .byte_count              (dma_byte_count),
+      .load_valid_bytes_per_row(dma_load_valid_bytes_per_row),
+      .load_input_rows         (dma_load_input_rows),
+      .load_done               (load_done),
+      .comp_weight_bank_sel    (int_weight_bank_sel),
+      .comp_act_bank_sel       (int_act_bank_sel),
+      .comp_bias_bank_sel      (int_bias_bank_sel),
+      .dma_issue               (dma_issue),
+      .store_req               (comp_store_req),
+      .busy                    (dma_lane_busy),
+      .stall                   (dma_lane_stall)
   );
 
   compute_lane comp_inst (
@@ -268,23 +275,26 @@ module instr_sequencer (
   );
 
   assign weight_bank_sel = int_weight_bank_sel;
-  assign act_bank_sel    = int_act_bank_sel;
-  assign bias_bank_sel   = int_bias_bank_sel;
+  assign act_bank_sel = int_act_bank_sel;
+  assign bias_bank_sel = int_bias_bank_sel;
 
-  assign ready           = (start == 1'b0) && !fet_busy && !dma_lane_busy && !comp_lane_busy;
-  assign busy            = fet_busy || dma_lane_busy || comp_lane_busy;
-  assign done            = fet_halt && !dma_lane_busy && !comp_lane_busy;
-  assign error           = comp_error;
-  assign pmu_freeze      = done;
-  assign run_active      = busy;
-  assign mac_active      = comp_mac_active;
-  assign stall           = dma_lane_stall || comp_lane_stall;
+  assign ready = (start == 1'b0) && !fet_busy && !dma_lane_busy && !comp_lane_busy;
+  assign busy = fet_busy || dma_lane_busy || comp_lane_busy;
+  assign done = fet_halt && !dma_lane_busy && !comp_lane_busy;
+  assign error = comp_error;
+  assign pmu_freeze = done;
+  assign run_active = busy;
+  assign mac_active = comp_mac_active;
+  assign stall = dma_lane_stall || comp_lane_stall;
 
   // Mux shared DMA channel signals: load_req from DMA lane, store_req from compute lane
-  assign load_req        = dma_load_req;
-  assign store_req       = comp_store_req;
-  assign load_target     = dma_load_target;
-  assign ddr3_addr       = dma_load_req ? dma_ddr3_addr : comp_ddr3_addr;
-  assign byte_count      = dma_load_req ? dma_byte_count : comp_byte_count;
+  assign load_req = dma_load_req;
+  assign store_req = comp_store_req;
+  assign load_target = dma_load_target;
+  assign ddr3_addr = dma_load_req ? dma_ddr3_addr : comp_ddr3_addr;
+  assign byte_count = dma_load_req ? dma_byte_count : comp_byte_count;
+  // STORE never reads these; only the DMA lane's own values matter.
+  assign load_valid_bytes_per_row = dma_load_valid_bytes_per_row;
+  assign load_input_rows = dma_load_input_rows;
 
 endmodule

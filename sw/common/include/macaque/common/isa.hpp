@@ -4,22 +4,6 @@
 
 namespace macaque::common::isa {
 
-// Instruction field layout:
-//  [63:60] opcode        (4 bits)
-//  [59]    acc_mode      (1 bit, MATMUL only)
-//  [58:56] target/flags  (3 bits)
-//  [55:28] ddr3_addr     (28 bits)
-//  [27:12] byte_count    (16 bits)
-//  [11:8]  reserved      (4 bits) - spare capacity
-//  [7:0]   tile_params   (8 bits)
-constexpr int kOpcodeBits = 4;
-constexpr int kAccModeBits = 1;
-constexpr int kTargetBits = 3;
-constexpr int kDdr3AddrBits = 28;
-constexpr int kByteCountBits = 16;
-constexpr int kReservedBits = 4;
-constexpr int kTileParamsBits = 8;
-
 enum class Opcode : uint8_t {
   LoadWeight = 0x0,
   LoadBias = 0x1,
@@ -36,83 +20,94 @@ enum class ActFunc : uint8_t { Relu = 0, LeakyRelu = 1, Passthrough = 2 };
 // Leaky-ReLU negative slope (power-of-two): alpha = 2^-kLeakyReluShift = 1/16.
 constexpr int kLeakyReluShift = 4;
 
+[[nodiscard]] inline constexpr Opcode decodeOpcode(uint64_t word) noexcept {
+  return static_cast<Opcode>((word >> 60) & 0xF);
+}
+[[nodiscard]] inline constexpr uint64_t encodeOpcode(Opcode op) noexcept {
+  return (static_cast<uint64_t>(op) & 0xF) << 60;
+}
+
 struct Instruction {
-  Opcode opcode;       // [63:60]
-  bool acc_mode;       // [59]
-  uint8_t target;      // [58:56]
-  uint32_t ddr3_addr;  // [55:28]
-  uint16_t byte_count; // [27:12]
-  uint8_t reserved;    // [11:8]
-  uint8_t tile_params; // [7:0]
+  Opcode opcode;                   // [63:60]
+  uint32_t ddr3_addr;              // [55:28]
+  uint16_t byte_count;             // [27:12]
+  uint8_t valid_bytes_per_row = 0; // [11:8] - LOAD_INPUT only
+  uint8_t input_rows = 0;          // [7:0] - LOAD_INPUT only
 
   [[nodiscard]] uint64_t encode() const {
-    return (static_cast<uint64_t>(opcode) & 0xF) << 60 |
-           (static_cast<uint64_t>(acc_mode) & 1) << 59 |
-           (static_cast<uint64_t>(target) & 0x7) << 56 |
+    return encodeOpcode(opcode) |
            (static_cast<uint64_t>(ddr3_addr) & 0xFFFFFFF) << 28 |
            (static_cast<uint64_t>(byte_count) & 0xFFFF) << 12 |
-           (static_cast<uint64_t>(reserved) & 0xF) << 8 |
-           (static_cast<uint64_t>(tile_params) & 0xFF);
+           (static_cast<uint64_t>(valid_bytes_per_row) & 0xF) << 8 |
+           (static_cast<uint64_t>(input_rows) & 0xFF);
   }
 
   [[nodiscard]] static Instruction decode(uint64_t word) {
-    return {static_cast<Opcode>((word >> 60) & 0xF),
-            static_cast<bool>((word >> 59) & 1),
-            static_cast<uint8_t>((word >> 56) & 0x7),
-            static_cast<uint32_t>((word >> 28) & 0xFFFFFFF),
+    return {decodeOpcode(word), static_cast<uint32_t>((word >> 28) & 0xFFFFFFF),
             static_cast<uint16_t>((word >> 12) & 0xFFFF),
             static_cast<uint8_t>((word >> 8) & 0xF),
             static_cast<uint8_t>(word & 0xFF)};
   }
 };
 
-// ACTIVATE field reinterpretation
-//   ddr3_addr[27:11]  -> scale_m        (17-bit unsigned fixed-point M)
-//   ddr3_addr[10:0] +
-//   byte_count[15:14] -> reserved - spare for a future per-instruction
-//                        leaky-ReLU shift
-//   byte_count[4:0]   -> scale_shift    (0..31)
-//   byte_count[12:5]  -> row_base       (out_buffer row this M-chunk's
-//                       accumulator starts at; see MATMUL's mat_row_base
-//                       below - always 0 except for a held batch)
-//   byte_count[13]    -> bank_hold      (skip the out_bank_sel toggle - more
-//                       chunks from this same held-batch bank still need
-//                       draining before the next matmul round may reuse it)
-//   target[58:56]     -> act_func
-//   tile_params       -> num_rows       (M dimension; `reserved` is spare,
-//                       not part of this - see the field layout note up top)
-[[nodiscard]] inline constexpr uint32_t scale_m(const Instruction &i) noexcept {
-  return (i.ddr3_addr >> 11) & 0x1FFFF;
-}
-[[nodiscard]] inline constexpr uint32_t
-scale_shift(const Instruction &i) noexcept {
-  return i.byte_count & 0x1F;
-}
-[[nodiscard]] inline constexpr uint8_t
-act_row_base(const Instruction &i) noexcept {
-  return static_cast<uint8_t>((i.byte_count >> 5) & 0xFF);
-}
-[[nodiscard]] inline constexpr bool
-act_bank_hold(const Instruction &i) noexcept {
-  return ((i.byte_count >> 13) & 0x1) != 0;
-}
-[[nodiscard]] inline constexpr ActFunc act_func(const Instruction &i) noexcept {
-  return static_cast<ActFunc>(i.target);
-}
-[[nodiscard]] inline constexpr uint32_t
-num_rows(const Instruction &i) noexcept {
-  return i.tile_params;
+// MATMUL reinterpretation
+struct MatmulFields {
+  bool acc_mode;        // [59] K-tile accumulate flag
+  bool weight_hold;     // [56] - reuse the currently-loaded weight/bias
+                        //       bank instead of a fresh load
+  uint8_t mat_row_base; // [35:28] - out_buffer row this M-chunk's
+                        //          accumulator starts at
+  uint8_t tile_params;  // [7:0] - row count (M) to feed
+};
+
+[[nodiscard]] inline constexpr uint64_t
+encodeMatmul(const MatmulFields &m) noexcept {
+  return encodeOpcode(Opcode::Matmul) |
+         (static_cast<uint64_t>(m.acc_mode) & 1) << 59 |
+         (static_cast<uint64_t>(m.weight_hold) & 1) << 56 |
+         (static_cast<uint64_t>(m.mat_row_base) & 0xFF) << 28 |
+         (static_cast<uint64_t>(m.tile_params) & 0xFF);
 }
 
-// MATMUL field reinterpretation
-//   target[0]      -> weight_hold
-//   ddr3_addr[7:0] -> mat_row_base (Must match the corresponding ACTIVATE's
-//                    row_base above.)
-[[nodiscard]] inline constexpr bool weight_hold(const Instruction &i) noexcept {
-  return (i.target & 0x1) != 0;
+[[nodiscard]] inline constexpr MatmulFields
+decodeMatmul(uint64_t word) noexcept {
+  return {static_cast<bool>((word >> 59) & 1),
+          static_cast<bool>((word >> 56) & 1),
+          static_cast<uint8_t>((word >> 28) & 0xFF),
+          static_cast<uint8_t>(word & 0xFF)};
 }
-[[nodiscard]] inline constexpr uint8_t
-mat_row_base(const Instruction &i) noexcept {
-  return static_cast<uint8_t>(i.ddr3_addr & 0xFF);
+
+// ACTIVATE reinterpretation
+struct ActivateFields {
+  ActFunc act_func;        // [58:56]
+  uint32_t act_scale_m;    // [55:39] - requantize multiplier (17-bit
+                           //           fixed-point)
+  bool act_bank_hold;      // [25] - skip the out_bank_sel toggle
+  uint8_t act_row_base;    // [24:17] - out_buffer row this M-chunk's
+                           //           accumulator starts at
+  uint8_t act_scale_shift; // [16:12] - requantize right-shift
+  uint8_t act_num_rows;    // [7:0] - rows to requantize
+};
+
+[[nodiscard]] inline constexpr uint64_t
+encodeActivate(const ActivateFields &a) noexcept {
+  return encodeOpcode(Opcode::Activate) |
+         (static_cast<uint64_t>(a.act_func) & 0x7) << 56 |
+         (static_cast<uint64_t>(a.act_scale_m) & 0x1FFFF) << 39 |
+         (static_cast<uint64_t>(a.act_bank_hold) & 1) << 25 |
+         (static_cast<uint64_t>(a.act_row_base) & 0xFF) << 17 |
+         (static_cast<uint64_t>(a.act_scale_shift) & 0x1F) << 12 |
+         (static_cast<uint64_t>(a.act_num_rows) & 0xFF);
 }
+
+[[nodiscard]] inline constexpr ActivateFields
+decodeActivate(uint64_t word) noexcept {
+  return {static_cast<ActFunc>((word >> 56) & 0x7),
+          static_cast<uint32_t>((word >> 39) & 0x1FFFF),
+          static_cast<bool>((word >> 25) & 1),
+          static_cast<uint8_t>((word >> 17) & 0xFF),
+          static_cast<uint8_t>((word >> 12) & 0x1F),
+          static_cast<uint8_t>(word & 0xFF)};
+}
+
 } // namespace macaque::common::isa

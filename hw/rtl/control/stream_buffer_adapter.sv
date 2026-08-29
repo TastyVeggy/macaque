@@ -9,6 +9,12 @@ module stream_buffer_adapter (
     input logic store_req,
     input npu_pkg::buffer_type_t load_target,
     input logic [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
+    // LOAD_INPUT-only DMA zero-injection sizing
+    // every row of this transfer is the real input and 
+    // byte_count is the normal padded transfer size, 
+    // same as every other load
+    input logic [3:0] load_valid_bytes_per_row,
+    input logic [7:0] load_input_rows,
     output logic load_done,
     output logic store_done,
 
@@ -63,7 +69,10 @@ module stream_buffer_adapter (
   state_t state;
 
   npu_pkg::buffer_type_t target;
-  logic [8:0] row_size;  // 14 or 56
+  logic [8:0] row_size;  // 14 (int8) or 56 (int32)
+  logic [8:0] pop_threshold;  // row_size normally; valid_bytes_per_row when padding
+  logic pad_active;  // zero-injection active for this transfer
+  logic [3:0] valid_bytes_reg;  // registered load_valid_bytes_per_row
   logic [15:0] load_rows_total;  // rows covering byte_count for LOAD
   logic [15:0] row_index;  // current buffer address
 
@@ -83,7 +92,7 @@ module stream_buffer_adapter (
 
   assign load_accept = (state == LOAD_ST) && s_axis_tvalid && s_axis_tready;
   assign store_accept = (state == STORE_ST) && m_axis_tvalid && m_axis_tready;
-  assign row_ready = (acc_fill >= row_size);
+  assign row_ready = (acc_fill >= pop_threshold) && (row_index < load_rows_total);
   assign all_rows_read = (store_rows_read >= store_rows_total);
   assign store_need_read = (state == STORE_ST) && (store_rows_read < store_rows_total) &&
                            !read_pending && (acc_fill <= StoreMaxFill);
@@ -98,12 +107,12 @@ module stream_buffer_adapter (
     l_next_fill = acc_fill;
     l_next_acc  = acc;
     if (row_ready) begin
-      l_next_acc = acc >> (row_size * 8);
+      l_next_acc = acc >> (pop_threshold * 8);
       if (load_accept) begin
-        l_next_acc[(acc_fill-row_size)*8+:64] = s_axis_tdata;
-        l_next_fill = acc_fill + 9'd8 - row_size;
+        l_next_acc[(acc_fill-pop_threshold)*8+:64] = s_axis_tdata;
+        l_next_fill = acc_fill + 9'd8 - pop_threshold;
       end else begin
-        l_next_fill = acc_fill - row_size;
+        l_next_fill = acc_fill - pop_threshold;
       end
     end else if (load_accept) begin
       l_next_acc = acc;
@@ -136,6 +145,9 @@ module stream_buffer_adapter (
       state            <= IDLE;
       target           <= npu_pkg::BUF_WEIGHT;
       row_size         <= 9'(Int8RowBytes);
+      pop_threshold    <= 9'(Int8RowBytes);
+      pad_active       <= 1'b0;
+      valid_bytes_reg  <= '0;
       load_rows_total  <= '0;
       row_index        <= '0;
       store_rows_total <= '0;
@@ -161,10 +173,24 @@ module stream_buffer_adapter (
             target <= load_req ? load_target : BUF_ACT;
             if (load_req && (load_target == BUF_BIAS)) begin
               row_size        <= 9'(Int32RowBytes);
+              pop_threshold   <= 9'(Int32RowBytes);
+              pad_active      <= 1'b0;
+              valid_bytes_reg <= '0;
               load_rows_total <= (byte_count + Int32RowBytes - 16'd1) / Int32RowBytes;
             end else begin
-              row_size        <= 9'(Int8RowBytes);
-              load_rows_total <= (byte_count + Int8RowBytes - 16'd1) / Int8RowBytes;
+              row_size <= 9'(Int8RowBytes);
+              if (load_req && (load_target == BUF_ACT) && (load_valid_bytes_per_row != '0)) begin
+                // DMA zero-injection
+                pad_active      <= 1'b1;
+                pop_threshold   <= {5'b0, load_valid_bytes_per_row};
+                valid_bytes_reg <= load_valid_bytes_per_row;
+                load_rows_total <= {8'b0, load_input_rows};
+              end else begin
+                pad_active      <= 1'b0;
+                pop_threshold   <= 9'(Int8RowBytes);
+                valid_bytes_reg <= '0;
+                load_rows_total <= (byte_count + Int8RowBytes - 16'd1) / Int8RowBytes;
+              end
             end
             row_index        <= '0;
             store_rows_total <= (byte_count + Int8RowBytes - 16'd1) / Int8RowBytes;
@@ -230,7 +256,9 @@ module stream_buffer_adapter (
     if (target == BUF_WEIGHT)
       for (int c = 0; c < ARRAY_SIZE; c++) wb_data_c[c] = npu_pkg::weight_t'(acc[c*8+:8]);
     else if (target == BUF_ACT)
-      for (int c = 0; c < ARRAY_SIZE; c++) ab_data_c[c] = npu_pkg::act_t'(acc[c*8+:8]);
+      for (int c = 0; c < ARRAY_SIZE; c++)
+      ab_data_c[c] = (pad_active && (c >= int'(valid_bytes_reg))) ?
+            npu_pkg::act_t'(8'h0) : npu_pkg::act_t'(acc[c*8+:8]);
     else if (target == BUF_BIAS)
       for (int c = 0; c < ARRAY_SIZE; c++) bb_data_c[c] = npu_pkg::bias_t'(acc[c*32+:32]);
   end

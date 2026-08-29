@@ -20,16 +20,21 @@ int main(int argc, char **argv) {
     device.stageProgramData(prog);
     device.loadInstructions(prog);
 
+    std::cout << "Loaded model" << std::endl;
+
     const rt::RawImage img = rt::loadPng(argv[2], /*desiredChannels=*/1);
 
-    constexpr rt::QuantParams kMnistInputQuant{/*scale=*/255.0f / 127.0f,
-                                               /*zeroPoint=*/0};
+    std::cout << "Loaded image" << std::endl;
+
+    constexpr rt::QuantParams kGrayscaleInputQuant{/*scale=*/255.0f / 127.0f,
+                                                   /*zeroPoint=*/0};
 
     const std::vector<uint8_t> output =
-        device.infer(prog, img, kMnistInputQuant);
+        device.infer(prog, img, kGrayscaleInputQuant);
 
     if (output.empty())
-      throw std::runtime_error("device.infer() returned no output bytes - program has no output tiles");
+      throw std::runtime_error("device.infer() returned no output bytes - "
+                               "program has no output tiles");
 
     int predicted = 0;
     int8_t best = static_cast<int8_t>(output[0]);

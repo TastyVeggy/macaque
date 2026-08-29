@@ -5,13 +5,15 @@ module dma_unit (
     input logic rst,
 
     // Sequencer request interface (load/store mutually exclusive)
-    input  logic                                                load_req,
-    input  logic                                                store_req,
-    input  npu_pkg::buffer_type_t                               load_target,
-    input  logic                  [npu_pkg::ISA_BYTE_CNT_W-1:0] byte_count,
-    input  logic                  [npu_pkg::ISA_DDR_ADDR_W-1:0] ddr3_addr,
-    output logic                                                load_done,
-    output logic                                                store_done,
+    input  logic                         load_req,
+    input  logic                         store_req,
+    input  npu_pkg::buffer_type_t        load_target,
+    input  logic                  [15:0] byte_count,
+    input  logic                  [27:0] ddr3_addr,
+    input  logic                  [ 3:0] load_valid_bytes_per_row,
+    input  logic                  [ 7:0] load_input_rows,
+    output logic                         load_done,
+    output logic                         store_done,
 
     // Bytes transferred this cycle (for the PMU DMA counters)
     output logic [31:0] dma_bytes_rd_this_cycle,
@@ -94,6 +96,8 @@ module dma_unit (
       .store_req,
       .load_target,
       .byte_count,
+      .load_valid_bytes_per_row,
+      .load_input_rows,
       .load_done (a_load_done),
       .store_done(a_store_done),
       .s_axis_tdata,

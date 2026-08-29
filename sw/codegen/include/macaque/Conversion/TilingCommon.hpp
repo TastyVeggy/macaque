@@ -34,8 +34,9 @@ inline constexpr int64_t kMaxBatchRows = macaque_defs::kMaxHoldBatchRows;
 
 // Just makes everything so much more convenient
 inline constexpr int64_t kMaxFlatChunkRows = kMaxBatchRows;
-static_assert(kMaxFlatChunkRows <= (1 << macaque_isa::kTileParamsBits) - 1,
-              "kMaxFlatChunkRows must still fit tile_params' 8-bit encoding");
+static_assert(
+    kMaxFlatChunkRows <= (1 << 8) - 1,
+    "kMaxFlatChunkRows must still fit the ISA's 8-bit row-count byte");
 
 inline int64_t numFlatChunksFor(int64_t rows) {
   return (rows + kMaxFlatChunkRows - 1) / kMaxFlatChunkRows;

@@ -123,19 +123,9 @@ flowchart TD
 
 ## ISA
 
-### Instruction format
-
-Every instruction is a fixed-width 64-bit word
-
-| Field | Bits | Width | Meaning |
-|---|---|---|---|
-| `opcode` | `[63:60]` | 4 | see [opcode](#opcodes) table below |
-| `acc_mode` | `[59]` | 1 | Used in OP_MATMUL only: 1 = accumulate results (for tiling) |
-| `target` | `[58:56]` | 3 | OP_ACTIVATE: `act_func`. OP_MATMUL: `target[0]` = `weight_hold` (see below); `target[2:1]` reserved |
-| `ddr3_addr` | `[55:28]` | 28 | byte address into DDR3 (256 MB space) for LOAD/STORE. OP_MATMUL instead uses only `ddr3_addr[7:0]` as `mat_row_base` (see below) - the rest is unused |
-| `byte_count` | `[27:12]` | 16 | transfer size in bytes (LOAD/STORE) |
-| `reserved` | `[11:8]` | 4 | currently not used 
-| `tile_params` | `[7:0]` | 8 | tile size (rows to feed), used only in OP_MATMUL and OP_ACTIVATE |
+Every instruction is a fixed-width 64-bit word. Only `opcode` (`[63:60]`) has
+a fixed meaning across every instruction - each opcode packs the rest of the
+word differently, documented per-opcode below.
 
 ### Opcodes
 | Opcode | Value | Effect |
@@ -148,25 +138,48 @@ Every instruction is a fixed-width 64-bit word
 | `OP_STORE` | `0x5` | write the INT8 result tile back to DDR3 |
 | `OP_SYNC` | `0x6` | barrier between the DMA and compute lanes |
 
-### ACTIVATE field reinterpretation
+### LOAD_WEIGHT / LOAD_BIAS / STORE
 
-`OP_ACTIVATE` packs different data into the generic layout above:
+| Field | Bits | Width | Meaning |
+|---|---|---|---|
+| `ddr3_addr` | `[55:28]` | 28 | byte address into DDR3 (256 MB space) |
+| `byte_count` | `[27:12]` | 16 | transfer size in bytes |
 
-| Field | Bits | Meaning |
-|---|---|---|
-| `act_func` | `[58:56]` (`target`) | `0`=ReLU, `1`=leaky-ReLU (α=2⁻⁴, fixed), `2`=passthrough |
-| `act_scale_m` | `[55:39]` (`ddr3_addr[27:11]`) | requantize multiplier (fixed-point), 17 bits |
-| `act_scale_shift` | `[16:12]` (`byte_count[4:0]`) | requantize right-shift |
-| `act_row_base` | `[24:17]` (`byte_count[12:5]`) | out_buffer row this M-chunk's accumulator starts at |
-| `act_bank_hold` | `[25]` (`byte_count[13]`) | `1` = skip the `out_bank_sel` toggle|
-| `act_num_rows` | `[7:0]` (`tile_params[7:0]`) | rows to requantize |
+### LOAD_INPUT
 
-### MATMUL field reinterpretation: weight_hold and mat_row_base
+| Field | Bits | Width | Meaning |
+|---|---|---|---|
+| `ddr3_addr` | `[55:28]` | 28 | byte address into DDR3 |
+| `byte_count` | `[27:12]` | 16 | transfer size in bytes - the padded tile size normally, or the true/dense size when zero-injection (below) is active |
+| `valid_bytes_per_row` | `[11:8]` | 4 | DMA zero-injection: real bytes per row. `0` = disabled, every row is fully real |
+| `input_rows` | `[7:0]` | 8 | this transfer's row count - only meaningful when `valid_bytes_per_row != 0` |
 
-| Field | Bits | Meaning |
-|---|---|---|
-| `weight_hold` | `[56]` (`target[0]`) | `1` = reuse the currently-loaded weight/bias bank instead of a fresh `load_weight`/`load_bias` - weight-stationary M-streaming |
-| `mat_row_base` | `[7:0]` (`ddr3_addr[7:0]`) | out_buffer row this M-chunk's accumulator starts at - `0` except for weight-hold combined with K-tiling |
+`valid_bytes_per_row`/`input_rows` exist for a runtime activation input whose
+K isn't a multiple of the 14-wide tile so the DMA can zero-fill the rest of each
+row on the way into the activation buffer
+
+### MATMUL
+
+| Field | Bits | Width | Meaning |
+|---|---|---|---|
+| `acc_mode` | `[59]` | 1 | `1` = accumulate into out_buffer (K-tiling) |
+| `weight_hold` | `[56]` (`target[0]`) | 1 | `1` = reuse the currently-loaded weight/bias bank instead of a fresh load - weight-stationary M-streaming |
+| `mat_row_base` | `[7:0]` (`ddr3_addr[7:0]`) | 8 | out_buffer row this M-chunk's accumulator starts at - `0` except weight-hold combined with K-tiling |
+| `tile_params` | `[7:0]` | 8 | row count (M) to feed |
+
+### ACTIVATE
+
+| Field | Bits | Width | Meaning |
+|---|---|---|---|
+| `act_func` | `[58:56]` (`target`) | 3 | `0`=ReLU, `1`=leaky-ReLU ($\alpha = 2^{-4}$, fixed), `2`=passthrough |
+| `act_scale_m` | `[55:39]` (`ddr3_addr[27:11]`) | 17 | requantize multiplier (fixed-point) |
+| `act_bank_hold` | `[25]` (`byte_count[13]`) | 1 | `1` = skip the `out_bank_sel` toggle |
+| `act_row_base` | `[24:17]` (`byte_count[12:5]`) | 8 | out_buffer row this M-chunk's accumulator starts at |
+| `act_scale_shift` | `[16:12]` (`byte_count[4:0]`) | 5 | requantize right-shift |
+| `act_num_rows` | `[7:0]` (`tile_params`) | 8 | rows to requantize |
+
+### SYNC
+No fields - opcode only.
 
 ## Register map
 

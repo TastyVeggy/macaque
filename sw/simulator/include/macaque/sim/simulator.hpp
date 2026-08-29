@@ -25,7 +25,7 @@ public:
   void run(const std::vector<uint64_t> &program);
 
 private:
-  void execute(const macaque::common::isa::Instruction &ins);
+  void execute(uint64_t word);
 
   std::vector<uint8_t> mem_;
 
