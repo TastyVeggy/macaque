@@ -19,7 +19,7 @@ The software toolchain consists of:
    macaque-lower mnist_mlp.mlir -o mnist_mlp.macq
    ```
 
-    [`sw/runtime/examples/mnist/mnist_mlp.macq`](sw/runtime/examples/mnist/mnist_mlp.macq) is the program generated from [`sw/runtime/examples/mnist/mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir)
+    [`mnist_mlp.macq`](sw/runtime/examples/mnist/mnist_mlp.macq) is the program generated from [`mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir)
 3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_digit.cpp](sw/runtime/examples/)).
    ```sh
    macaque run mnist_mlp.macq --port /dev/ttyUSB0 --image digit.png --scale 2.0079
@@ -230,7 +230,7 @@ The top byte of the 4-byte address selects the target: `0x40` goes to control re
 - Python 3.12 (For hardware simulation and testing)
     - Install packages in `requirements.txt`
 - llvm with mlir
-    - Can be installed and built via [this script](build_llvm_mlir.sh)
+    - Can be installed and built via [this script](build_llvm_mlir.sh) if on Unix-like with `git`, `ninja`, `clang` and `lld`.
 
 ### Hardware
 To do a full build and program the FPGA:

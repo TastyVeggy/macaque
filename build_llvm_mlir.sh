@@ -3,7 +3,7 @@ set -euo pipefail
 
 LLVM_TAG=llvmorg-22.1.6
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLVM_DIR="$ROOT_DIR/third-party/llvm-project"
 
 if [ -d "$LLVM_DIR" ]; then
