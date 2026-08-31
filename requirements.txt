@@ -10,3 +10,4 @@ Pygments==2.20.0
 pyserial==3.5
 pytest==9.0.3
 scapy==2.7.0
+ 

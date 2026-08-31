@@ -9,4 +9,3 @@ proc glob_recursive {dir} {
     }
     return $res
 }
-

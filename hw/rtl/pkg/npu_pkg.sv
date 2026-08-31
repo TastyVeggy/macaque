@@ -172,4 +172,3 @@ package npu_pkg;
   } buffer_type_t;
 
 endpackage
-

@@ -37,4 +37,3 @@ xelab -debug typical \
     work.glbl
 
 xsim ${TB_DIR}_tb_sim -runall
-

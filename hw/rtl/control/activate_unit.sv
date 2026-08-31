@@ -177,4 +177,3 @@ module activate_unit (
   end
 
 endmodule
-

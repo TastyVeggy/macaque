@@ -138,4 +138,3 @@ module fetch_unit (
   end
 
 endmodule
-

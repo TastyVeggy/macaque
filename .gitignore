@@ -40,3 +40,4 @@ vivado_pid*.str
 *.bin
 *.dcp
 .nvim
+ 

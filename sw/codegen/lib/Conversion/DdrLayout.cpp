@@ -36,10 +36,7 @@ int64_t numKTilesFor(tosa::MatMulOp matmul) {
 // kMaxFlatChunkRows rows, the last one whatever remains) of a `fullRows`-row,
 // 14-column, `elemBytes`-per-element tensor. This is the sum of each
 // individual chunk's own aligned size, not one aligned block for the whole
-// tensor - every chunk lands at its own independently 8-byte-aligned DDR3
-// address (same "every tile gets its own slot" rule as K/N-tiling - see
-// MEMORY_LAYOUT.md), so the total can come out slightly larger than
-// alignUp(fullRows * 14 * elemBytes) in one shot.
+// tensor.
 uint32_t flatChunkedRowBytes(int64_t fullRows, int64_t numChunks,
                              int64_t elemBytes) {
   uint32_t total = 0;

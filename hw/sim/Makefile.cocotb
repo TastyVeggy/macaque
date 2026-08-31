@@ -26,4 +26,3 @@ SIM_BUILD := $(WORK_DIR)/sim_build
 export COCOTB_RESULTS_FILE := $(WORK_DIR)/results.xml
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
-

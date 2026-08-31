@@ -57,4 +57,3 @@ make TB=systolic_array MODE=cocotb
 ```bash
 make clean
 ```
-
