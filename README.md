@@ -12,9 +12,12 @@ The software toolchain consists of:
 > [!NOTE]
 > This project is still under active development. A full pipeline runs end-to-end on real FPGA hardware, but many features are missing or unstable.
 
+---
+
+
 ## Usage
 1. Train the weights on host computer and lower it to TOSA v1.0 IR.
-    * Theoretically any ML compiler frontend that can emit TOSA v1.0 IR restricted to the pattern `macaque-lower` supports (see above) would work but most will end up emitting TOSA with patterns that are not supported or that is not TOSA 1.0 compliant or just does not support TOSA. PyTorch via ExecuTorch's Arm/TOSA backend is the most promising path found so far, but its output still needs additional features from `macaque-lower` that doesn't exist yet. The only method that has been tested to work end-to-end involve training the weights in NumPy and then converting them to TOSA 'manually' using string templating. This method results in [`mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir) (the output of training a small INT8 MINST classifier), which serves as an example of a TOSA IR file that is compliant with `macaque-lower`.
+    * Theoretically any ML compiler frontend that can emit TOSA v1.0 IR restricted to the pattern `macaque-lower` supports (see above) would work but most will end up emitting TOSA with patterns that are not supported by `macaque-lower` or that is not TOSA 1.0 compliant or just does not support TOSA. PyTorch via ExecuTorch's Arm/TOSA backend is the most promising path found so far, but its output still needs additional features from `macaque-lower` that doesn't exist yet. The only method that has been tested to work end-to-end involves training the weights in NumPy and then converting them to TOSA 'manually' using string templating (see AI-generated [`train_mnist.py`](sw/scripts/train_mnist.py) script). This method results in [`mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir) (the output of training a small INT8 MINST classifier), which serves as an example of a TOSA IR file that is compliant with `macaque-lower`.
 
 2. `macaque-lower` compiles that TOSA IR into a `.macq` program
    ```sh
@@ -22,15 +25,12 @@ The software toolchain consists of:
    ```
 
     [`mnist_mlp.macq`](sw/runtime/examples/mnist/mnist_mlp.macq) is the program generated from [`mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir)
-3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_digit.cpp](sw/runtime/examples/)).
+3. Run the compiled program against real hardware with `macaque`, or link `macaque_runtime` directly into your own application (see [sw/runtime/examples/infer_digit.cpp](sw/runtime/examples/infer_digit.cpp)).
    ```sh
    macaque run mnist_mlp.macq --port /dev/ttyUSB0 --image digit.png --scale 2.0079
    ```
-
-
 ---
-
-## Hardware
+## Hardware Specifications
 
 | **Component** | **Part** | **Remark**|
 |---|---|---|
@@ -42,6 +42,62 @@ The software toolchain consists of:
 | DDR3 | 256 MB Micron MT41K128M16JT-125:K |
 | Ethernet | Realtek RTL8211EG (1 Gbps) | Currently unused. **Future scope**: mode of communication used by host to read/write DDR3
 | UART | CH340N USB-UART bridge | Used for all mode of communication between host and device
+
+---
+## Building
+
+### Prerequisites
+- Xilinx XC7A100T FPGA (Tested on [this hardware](#hardware-specifications))
+- Vivado ML Edition v2025.2 (Artix-7 device support)
+- CMake 3.28
+- GCC or Clang with C++20 support
+- Python 3.12 (For hardware simulation and testing)
+    - Install packages in `requirements.txt`
+- llvm with mlir
+    - Can be installed and built via [this script](build_llvm_mlir.sh) if on Unix-like with `git`, `ninja`, `clang` and `lld`.
+
+### Hardware
+To do a full build and program the FPGA:
+```bash
+make hw
+```
+
+Alternatively, each individual stage can be carried out separately:
+```bash
+make -C hw synth
+make -C hw impl
+make -C hw bitstream
+make -C hw program
+```
+
+#### Testing the build
+After programming the fpga, you can test it with:
+
+```bash
+make test-hw
+```
+
+What the test does:
+* Load 100 x 130 and 130 x 150 matrices onto the FPGA memory
+* Load instructions to multiply the two loaded matrices and trigger execution on the hardware
+* Reads back the output and verify correctness against expected host results
+
+#### Running testbenches on simulated hardware
+Refer to [README](hw/sim/README.md) in `hw/sim`.
+
+### Software
+
+To configure and build all C++ components as well as install the relevant binaries
+```bash
+make sw
+```
+
+The `macaque-lower` and `macaque` binaries can be found in the `bin` folder at the root of the repository. To learn more about usage, run them with `--help`. 
+
+#### Testing the software
+```bash
+make test-sw
+```
 
 ---
 
@@ -220,60 +276,3 @@ The top byte of the 4-byte address selects the target: `0x40` goes to control re
 | `0x0000_0000` – `0x0FFF_FFFF` | 256 MB | DDR3 (via `dma_unit`'s AXI4 path) |
 | `0x4000_0000` – `0x40FF_FFFF` | - | register map |
 | `0x5000_0000` – `0x50FF_FFFF` | - | instruction memory (`IMEM_BASE`, 4096 × 64-bit words) |
-
----
-
-## Build
-
-### Prerequisites
-- Vivado ML Edition v2025.2 (Artix-7 device support)
-- CMake 3.28
-- GCC or Clang with C++20 support
-- Python 3.12 (For hardware simulation and testing)
-    - Install packages in `requirements.txt`
-- llvm with mlir
-    - Can be installed and built via [this script](build_llvm_mlir.sh) if on Unix-like with `git`, `ninja`, `clang` and `lld`.
-
-### Hardware
-To do a full build and program the FPGA:
-```bash
-make hw
-```
-
-Alternatively, each individual stage can be carried out separately:
-```bash
-make -C hw synth
-make -C hw impl
-make -C hw bitstream
-make -C hw program
-```
-
-#### Testing the build
-After programming the fpga, you can test it with:
-
-```bash
-make test-hw
-```
-
-What the test does:
-* Load 100 x 130 and 130 x 150 matrices onto the FPGA memory
-* Load instructions to multiply the two loaded matrices and trigger execution on the hardware
-* Reads back the output and verify correctness against expected host results
-
-#### Running testbenches on simulated hardware
-Refer to [README](hw/sim/README.md) in `hw/sim`.
-
-### Software
-
-To configure and build all C++ components as well as install the relevant binaries
-```bash
-make sw
-```
-
-The `macaque-lower` and `macaque` binaries can be found in the `bin` folder at the root of the repository. To learn more about usage, run them with `--help`. 
-
-To run unit tests:
-```bash
-make test-sw
-```
- 
