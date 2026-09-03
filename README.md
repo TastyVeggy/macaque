@@ -5,15 +5,17 @@ A vertically integrated custom AI accelerator and software toolchain.
 The AI accelerator, *Macaque NPU*, is implemented on the Xilinx Artix-7 XC7A100T FPGA on a QMTECH Wukong V3 development board, and features a 14×14 INT8 systolic array.
 
 The software toolchain consists of:
-* Macaque compiler backend (via `macaque-lower`, see [codegen](sw/codegen/)): lowers a limited subset of TOSA IR to Macaque NPU instructions, generating the program file consumed by the runtime
-* Macaque runtime (via `macaque`, see [runtime](sw/runtime/)): handles I/O between the host computer and Macaque NPU - loading instructions, weights, biases, and input data, and reading back outputs
+* Macaque compiler backend (via `macaque-lower`, see [codegen](sw/codegen/)): compiles a limited subset of TOSA v1.0 IR (specifically the pattern `MATMUL` (+ optional bias `ADD`) $\rightarrow$ `RESCALE` $\rightarrow$ optional `CLAMP` (fused ReLU)) to a `.macq` program binaries.
+* Macaque runtime (via `macaque`, see [runtime](sw/runtime/)): consumes the `.macq` program and input data for inference to be run on. Its responsibility is handling I/O between the host computer and Macaque NPU - loading instructions, weights, biases, and input data, and reading back outputs
 * Behavioural simulator (see [simulator](sw/simulator/)): a library that simulates Macaque NPU's execution in software
 
 > [!NOTE]
 > This project is still under active development. A full pipeline runs end-to-end on real FPGA hardware, but many features are missing or unstable.
 
 ## Usage
-1. Train the weights on host computer. Can use any ML compiler frontend as long as the output can be lowered to TOSA IR, limited to TOSA operations that are actually supported by `macaque-lower` and the Macaque NPU itself. [`sw/runtime/examples/mnist/mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir) is an example TOSA IR file: the output of training a small INT8 MNIST classifier .
+1. Train the weights on host computer and lower it to TOSA v1.0 IR.
+    * Theoretically any ML compiler frontend that can emit TOSA v1.0 IR restricted to the pattern `macaque-lower` supports (see above) would work but most will end up emitting TOSA with patterns that are not supported or that is not TOSA 1.0 compliant or just does not support TOSA. PyTorch via ExecuTorch's Arm/TOSA backend is the most promising path found so far, but its output still needs additional features from `macaque-lower` that doesn't exist yet. The only method that has been tested to work end-to-end involve training the weights in NumPy and then converting them to TOSA 'manually' using string templating. This method results in [`mnist_mlp.mlir`](sw/runtime/examples/mnist/mnist_mlp.mlir) (the output of training a small INT8 MINST classifier), which serves as an example of a TOSA IR file that is compliant with `macaque-lower`.
+
 2. `macaque-lower` compiles that TOSA IR into a `.macq` program
    ```sh
    macaque-lower mnist_mlp.mlir -o mnist_mlp.macq
