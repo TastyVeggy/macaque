@@ -106,30 +106,39 @@ make test-sw
 ```mermaid
 flowchart TD
     Host["Host PC"]
-    
+
     subgraph Top["npu_top.sv - FPGA Board Top"]
 
         Bridge["uart_mmio_bridge<br/>Status / Reg / Imem / AXI Master"]
-        Arb["axi_arbiter (2:1)<br/>M0: Bridge | M1: DMA"]
+        Arb["axi_arbiter (2:1)<br/>S0: Bridge | S1: DMA → M: MIG"]
         MIG["MIG DDR3 Controller"]
         DDR3[("DDR3 Memory<br/>256 MB")]
 
-        subgraph Core["npu_core.sv -  NPU Compute Core"]
+        subgraph Core["npu_core.sv - NPU Compute Core"]
             CtrlRegs["ctrl_regs<br/>(CTRL/STATUS/INSTR_ADDR/INSTR_LEN/PMU_CTRL)"]
             IMem["imem<br/>(instruction BRAM)"]
-            Seq["instr_sequencer"]
+
+            subgraph Seq["instr_sequencer.sv"]
+                Fetch["fetch_unit<br/>decode + dispatch by opcode"]
+                DmaFifo["dma_fifo<br/>(instr_queue, depth 8)"]
+                CompFifo["comp_fifo<br/>(instr_queue, depth 8)"]
+                DmaLane["dma_lane<br/>LOAD_WEIGHT / LOAD_BIAS / LOAD_INPUT"]
+                CompLane["compute_lane<br/>MATMUL / ACTIVATE / STORE"]
+                DepTracker["dep_tracker<br/>bank state machine + SYNC barrier"]
+            end
+
             DmaUnit["dma_unit<br/>AXI4 Burst Engine + Stream Adapter"]
-            
-            subgraph Inputs["Input Buffers"]
-                WBuf["Weight Buffer"]
-                ABuf["Activation Buffer"]
-                BBuf["Bias Buffer"]
+
+            subgraph Inputs["Input Buffers (double-buffered)"]
+                WBuf["weight_buffer"]
+                ABuf["activation_buffer"]
+                BBuf["bias_buffer"]
             end
 
             Array["systolic_array (14x14)"]
-            OBuf["out_buffer"]
+            OBuf["out_buffer<br/>(array drain / ACTIVATE read / acc_mode feedback)"]
             QBuf["quant_buffer"]
-            Act["activate_unit<br/>Quantize INT32→INT8 & ReLU"]
+            Act["activate_unit<br/>Quantize INT32→INT8 & activation fn"]
             PMU["pmu<br/>Cycles / Stalls / Bytes"]
         end
     end
@@ -137,45 +146,57 @@ flowchart TD
     Host <-->|UART| Bridge
     Bridge <-->|Reg Bus| CtrlRegs
     Bridge <-->|Imem Bus| IMem
-    Bridge <-->|AXI M0| Arb
-    DmaUnit <-->|AXI M1| Arb
-    Arb <-->|AXI S| MIG
+    Bridge <-->|AXI, S0| Arb
+    DmaUnit <-->|AXI, S1| Arb
+    Arb -->|AXI, M| MIG
     MIG <--> DDR3
 
-    CtrlRegs <-->|start/reset ⇄ busy/done/error/ready| Seq
+    CtrlRegs <-->|start/reset ⇄ busy/done/error/ready| Fetch
     CtrlRegs <-->|enable/clear ⇄ counters| PMU
-    IMem <-->|addr ⇄ data| Seq
+    Fetch <-->|addr ⇄ data| IMem
+
+    Fetch -->|push, by opcode| DmaFifo
+    Fetch -->|push, by opcode| CompFifo
+    DmaFifo -->|pop| DmaLane
+    CompFifo -->|pop| CompLane
+
+    DmaLane <-.->|bank rdy / can-load, SYNC| DepTracker
+    CompLane <-.->|bank rdy / can-load, SYNC| DepTracker
+    DmaLane -->|weight/act/bias bank_sel| CompLane
 
     %% Core Dataflow & Control
-    Seq <-->|Load / Store Req ⇄ Done| DmaUnit
+    DmaLane -->|Load Req ⇄ Done| DmaUnit
+    CompLane -->|Store Req ⇄ Done| DmaUnit
     DmaUnit -->|Write| WBuf
     DmaUnit -->|Write| ABuf
     DmaUnit -->|Write| BBuf
-    QBuf -->|Read| DmaUnit
+    QBuf -->|Write| DmaUnit
 
     WBuf --> Array
     ABuf --> Array
     BBuf -->|acc_mode=0| Array
-    
-    Array -->|Drain| OBuf
-    OBuf ---->|acc_mode=1 feedback| Array
+    OBuf -->|acc_mode=1 feedback| Array
 
+    CompLane -. control ⇄ done .-> Array
+    Array -->|Drain| OBuf
+
+    CompLane -. control ⇄ done .-> Act
     OBuf --> Act
     Act --> QBuf
 
-    Seq <-. control ⇄ done .-> Array
-    Seq <-. control ⇄ done .-> Act
-    Seq -.->|event inputs only| PMU
+    Fetch -.->|event inputs only| PMU
     DmaUnit -.->|event inputs only| PMU
+    CompLane -.->|mac_active| PMU
 
     classDef host fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff;
     classDef mem fill:#2f855a,stroke:#68d391,stroke-width:2px,color:#fff;
     class Host host;
     class DDR3 mem;
-
 ```
 
 **Currently within a single clock domain.** Everything in `npu_top.sv`/`npu_core.sv` (sequencer, buffers, systolic array, DMA, UART bridge) runs on MIG's `ui_clk` (~83.33 MHz). This is done for simplicity. Future enhancement is a separate fast compute clock decoupled from `ui_clk`.
+
+The PMU while functional, should not be trusted. This is especially the case for stalls, as the way it is currently being tracked is fundamentally broken. The stalls count will likely have to be split by the compute lane and the DMA lane to be insightful. Currently, it tries to 'merge' the stalls from both lanes resulting in a count that is virtually pointles.
 
 ---
 
