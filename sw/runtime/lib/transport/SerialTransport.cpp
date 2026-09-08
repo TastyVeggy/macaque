@@ -77,6 +77,9 @@ SerialTransport::SerialTransport(const std::string &device, int baud,
   // O_NONBLOCK now that termios is configured.
   const int flags = ::fcntl(fd_, F_GETFL, 0);
   ::fcntl(fd_, F_SETFL, flags & ~O_NONBLOCK);
+
+    // Drop anything already sitting in the input buffer.  
+  ::tcflush(fd_, TCIOFLUSH);
 }
 
 SerialTransport::~SerialTransport() {
