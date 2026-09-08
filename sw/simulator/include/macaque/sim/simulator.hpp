@@ -34,7 +34,7 @@ private:
   std::array<std::array<int8_t, kArraySize>, kBramDepth>
       weight_{}; // [k][out_ch]
   std::array<std::array<int32_t, kArraySize>, kBramDepth>
-      bias_{};                                                    // [0][out_ch]
+      bias_{};                                                    // [r][out_ch]
   std::array<std::array<int8_t, kArraySize>, kBramDepth> act_{};  // [r][k]
   std::array<std::array<int32_t, kArraySize>, kBramDepth> out_{}; // [r][out_ch]
 };

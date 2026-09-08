@@ -42,6 +42,11 @@ public:
     scratch_a_base_ = detail::alignUp(input_next_ + totals.inputBytes);
     scratch_b_base_ = detail::alignUp(scratch_a_base_ + totals.maxScratchBytes);
     output_next_ = detail::alignUp(scratch_b_base_ + totals.maxScratchBytes);
+    // Staged once here, sized for the largest bias-less M-chunk, and shared
+    // by every bias-less matmul
+    if (totals.maxZeroBiasBytes > 0)
+      recordData(zero_bias_base_,
+                 llvm::SmallVector<uint8_t>(totals.maxZeroBiasBytes, 0));
   }
 
   uint32_t allocateWeight(uint32_t bytes) { return bump(weight_next_, bytes); }
@@ -49,15 +54,13 @@ public:
   uint32_t allocateInput(uint32_t bytes) { return bump(input_next_, bytes); }
   uint32_t allocateOutput(uint32_t bytes) { return bump(output_next_, bytes); }
 
-  // Fixed, shared and not written by the running program itself.
-  // The runtime is responsible for staging it as zero, same as any other
-  // region.
+  // Fixed, shared and not written by the running program itself. Its zeros
+  // are recorded once, by the constructor.
   uint32_t zeroBiasAddr() const { return zero_bias_base_; }
 
   // Returns addrs[nTile][mChunk], densely packed within one ping-pong bank
   llvm::SmallVector<llvm::SmallVector<uint32_t>>
-  allocateScratch(int64_t numNTiles, int64_t rows, int64_t numFlatChunks,
-                  int64_t elemBytes);
+  allocateScratch(int64_t numNTiles, int64_t rows, int64_t elemBytes);
 
   // Records the real DDR3 bytes for a compile-time-known region.
   // `bytes` is expected to already be zero-padded to that tile's full

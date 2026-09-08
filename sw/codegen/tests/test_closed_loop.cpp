@@ -33,6 +33,32 @@ namespace target = ::macaque::codegen::target;
 namespace isa = ::macaque::common::isa;
 namespace conversion = ::macaque::codegen::conversion;
 
+namespace {
+
+// A TOSA bias must already be shaped like the matmul output, [1, rows,
+// cols] (the compiler doesn't broadcast). These tests' biases only vary by
+// column, so every row repeats `row`.
+std::vector<int32_t> repeatRows(const std::vector<int32_t> &row,
+                                int64_t rows) {
+  std::vector<int32_t> out;
+  out.reserve(row.size() * static_cast<size_t>(rows));
+  for (int64_t r = 0; r < rows; ++r)
+    out.insert(out.end(), row.begin(), row.end());
+  return out;
+}
+
+// Stages the bias tile one LOAD_BIAS reads: one 14-lane INT32 row per output
+// row (byte_count / row size of them), each a copy of `row`.
+void writeBiasRows(sim::Simulator &simulator, LoadBiasOp load,
+                   const std::vector<uint8_t> &row) {
+  std::vector<uint8_t> bytes;
+  for (size_t off = 0; off < load.getByteCount(); off += row.size())
+    bytes.insert(bytes.end(), row.begin(), row.end());
+  simulator.write(load.getDdr3Addr(), bytes.data(), bytes.size());
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // 1. Hand-built macaque IR (no TOSA, no conversion pass)
 //===----------------------------------------------------------------------===//
@@ -70,13 +96,15 @@ std::vector<uint8_t> serializeActTile(int8_t (*a)(int, int)) {
   return bytes;
 }
 
+// One bias row per activation row (MATMUL seeds row r from bias row r).
 std::vector<uint8_t> serializeBias() {
   std::vector<uint8_t> bytes;
-  for (int c = 0; c < sim::kArraySize; ++c) {
-    int32_t v = bias(c);
-    for (int b = 0; b < 4; ++b)
-      bytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
-  }
+  for (int r = 0; r < kRows; ++r)
+    for (int c = 0; c < sim::kArraySize; ++c) {
+      int32_t v = bias(c);
+      for (int b = 0; b < 4; ++b)
+        bytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
+    }
   return bytes;
 }
 
@@ -106,7 +134,7 @@ TEST(ClosedLoop, TwoTileKTilingWithReluIsBitExact) {
   LoadWeightOp::create(builder, loc, TypeRange{}, kWeightAAddr,
                        sim::kArraySize * sim::kArraySize);
   LoadBiasOp::create(builder, loc, TypeRange{}, kBiasAddr,
-                     sim::kArraySize * sizeof(int32_t));
+                     kRows * sim::kArraySize * sizeof(int32_t));
   LoadInputOp::create(builder, loc, TypeRange{}, kActAAddr,
                       kRows * sim::kArraySize);
   MatmulOp::create(builder, loc, TypeRange{}, /*acc_mode=*/false,
@@ -228,15 +256,16 @@ tosa::ConstOp buildChainI8Tensor(OpBuilder &builder, Location loc, int rows,
       builder, loc, ty, DenseElementsAttr::get(ty, ArrayRef<int8_t>(data)));
 }
 
-tosa::ConstOp buildChainI32Bias(OpBuilder &builder, Location loc, int cols,
-                                int32_t (*gen)(int)) {
-  auto ty = RankedTensorType::get({1, 1, cols}, builder.getIntegerType(32));
-  std::vector<int32_t> data;
-  data.reserve(static_cast<size_t>(cols));
+tosa::ConstOp buildChainI32Bias(OpBuilder &builder, Location loc, int rows,
+                                int cols, int32_t (*gen)(int)) {
+  auto ty = RankedTensorType::get({1, rows, cols}, builder.getIntegerType(32));
+  std::vector<int32_t> row;
+  row.reserve(static_cast<size_t>(cols));
   for (int c = 0; c < cols; ++c)
-    data.push_back(gen(c));
+    row.push_back(gen(c));
   return tosa::ConstOp::create(
-      builder, loc, ty, DenseElementsAttr::get(ty, ArrayRef<int32_t>(data)));
+      builder, loc, ty,
+      DenseElementsAttr::get(ty, ArrayRef<int32_t>(repeatRows(row, rows))));
 }
 
 tosa::ConstOp buildChainScalarI8(OpBuilder &builder, Location loc, int8_t v) {
@@ -336,12 +365,12 @@ TEST(ClosedLoop, ThreeLayerChainFromTosaIsBitExact) {
       buildChainI8Tensor(builder, loc, kChainRows, kChainK, chainAct0);
   auto weight1Const =
       buildChainI8Tensor(builder, loc, kChainK, kChainK, chainWeight1);
-  auto bias1Const = buildChainI32Bias(builder, loc, kChainK, chainBias1);
+  auto bias1Const = buildChainI32Bias(builder, loc, kChainRows, kChainK, chainBias1);
   auto weight2Const =
       buildChainI8Tensor(builder, loc, kChainK, kChainK, chainWeight2);
   auto weight3Const =
       buildChainI8Tensor(builder, loc, kChainK, kChainK, chainWeight3);
-  auto bias3Const = buildChainI32Bias(builder, loc, kChainK, chainBias3);
+  auto bias3Const = buildChainI32Bias(builder, loc, kChainRows, kChainK, chainBias3);
 
   auto rescale1 = buildChainLayer(
       builder, loc, act0Const.getResult(), weight1Const, bias1Const,
@@ -393,15 +422,15 @@ TEST(ClosedLoop, ThreeLayerChainFromTosaIsBitExact) {
         bytes.push_back(static_cast<uint8_t>(gen(r, c)));
     simulator.write(addr, bytes.data(), bytes.size());
   };
-  auto writeI32Bias = [&](uint32_t addr, int cols, int32_t (*gen)(int)) {
-    std::vector<uint8_t> bytes;
-    bytes.reserve(static_cast<size_t>(cols) * 4);
+  auto writeI32Bias = [&](LoadBiasOp load, int cols, int32_t (*gen)(int)) {
+    std::vector<uint8_t> row;
+    row.reserve(static_cast<size_t>(cols) * 4);
     for (int c = 0; c < cols; ++c) {
       int32_t v = gen(c);
       for (int b = 0; b < 4; ++b)
-        bytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
+        row.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
     }
-    simulator.write(addr, bytes.data(), bytes.size());
+    writeBiasRows(simulator, load, row);
   };
 
   // Only genuinely external data needs staging: layer 1's activation, every
@@ -415,10 +444,10 @@ TEST(ClosedLoop, ThreeLayerChainFromTosaIsBitExact) {
   // inject for those either.
   writeI8Tile(loadInputs[0].getDdr3Addr(), kChainRows, kChainK, chainAct0);
   writeI8Tile(loadWeights[0].getDdr3Addr(), kChainK, kChainK, chainWeight1);
-  writeI32Bias(loadBiases[0].getDdr3Addr(), kChainK, chainBias1);
+  writeI32Bias(loadBiases[0], kChainK, chainBias1);
   writeI8Tile(loadWeights[1].getDdr3Addr(), kChainK, kChainK, chainWeight2);
   writeI8Tile(loadWeights[2].getDdr3Addr(), kChainK, kChainK, chainWeight3);
-  writeI32Bias(loadBiases[2].getDdr3Addr(), kChainK, chainBias3);
+  writeI32Bias(loadBiases[2], kChainK, chainBias3);
 
   simulator.run(*words);
 
@@ -513,10 +542,10 @@ TEST(ClosedLoop, NTiledChainIntoKTiledConsumerIsBitExact) {
       buildChainI8Tensor(builder, loc, kChainNKRows, 14, chainNKAct0);
   auto weight1Const =
       buildChainI8Tensor(builder, loc, 14, kChainNKN1, chainNKWeight1);
-  auto bias1Const = buildChainI32Bias(builder, loc, kChainNKN1, chainNKBias1);
+  auto bias1Const = buildChainI32Bias(builder, loc, kChainNKRows, kChainNKN1, chainNKBias1);
   auto weight2Const =
       buildChainI8Tensor(builder, loc, kChainNKK2, kChainNKN2, chainNKWeight2);
-  auto bias2Const = buildChainI32Bias(builder, loc, kChainNKN2, chainNKBias2);
+  auto bias2Const = buildChainI32Bias(builder, loc, kChainNKRows, kChainNKN2, chainNKBias2);
 
   auto rescale1 = buildChainLayerN(
       builder, loc, act0Const.getResult(), weight1Const, bias1Const,
@@ -563,15 +592,15 @@ TEST(ClosedLoop, NTiledChainIntoKTiledConsumerIsBitExact) {
         bytes.push_back(static_cast<uint8_t>(gen(r, c)));
     simulator.write(addr, bytes.data(), bytes.size());
   };
-  auto writeI32Bias = [&](uint32_t addr, int cols, int32_t (*gen)(int)) {
-    std::vector<uint8_t> bytes;
-    bytes.reserve(static_cast<size_t>(cols) * 4);
+  auto writeI32Bias = [&](LoadBiasOp load, int cols, int32_t (*gen)(int)) {
+    std::vector<uint8_t> row;
+    row.reserve(static_cast<size_t>(cols) * 4);
     for (int c = 0; c < cols; ++c) {
       int32_t v = gen(c);
       for (int b = 0; b < 4; ++b)
-        bytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
+        row.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
     }
-    simulator.write(addr, bytes.data(), bytes.size());
+    writeBiasRows(simulator, load, row);
   };
 
   // Layer 1's activation is fresh (one shared address, reloaded per N-tile -
@@ -594,7 +623,7 @@ TEST(ClosedLoop, NTiledChainIntoKTiledConsumerIsBitExact) {
       for (int b = 0; b < 4; ++b)
         bBytes.push_back(static_cast<uint8_t>((v >> (8 * b)) & 0xFF));
     }
-    simulator.write(loadBiases[n].getDdr3Addr(), bBytes.data(), bBytes.size());
+    writeBiasRows(simulator, loadBiases[n], bBytes);
   }
   // Layer 2's weight (28x14, split into 2 K-tiles of 14x14) and real bias
   // (14 channels, loaded once at the first K-tile).
@@ -606,7 +635,7 @@ TEST(ClosedLoop, NTiledChainIntoKTiledConsumerIsBitExact) {
     simulator.write(loadWeights[2 + k].getDdr3Addr(), wBytes.data(),
                     wBytes.size());
   }
-  writeI32Bias(loadBiases[2].getDdr3Addr(), kChainNKN2, chainNKBias2);
+  writeI32Bias(loadBiases[2], kChainNKN2, chainNKBias2);
 
   simulator.run(*words);
 
@@ -689,7 +718,7 @@ TEST(ClosedLoop, KTiledMatmulFromTosaIsBitExact) {
   auto aTy = RankedTensorType::get({1, kKTileRows, kKTileK}, i8Ty);
   auto bTy = RankedTensorType::get({1, kKTileK, 14}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kKTileRows, 14}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int r = 0; r < kKTileRows; ++r)
@@ -719,7 +748,8 @@ TEST(ClosedLoop, KTiledMatmulFromTosaIsBitExact) {
     biasData.push_back(kTileBias(c));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -792,8 +822,7 @@ TEST(ClosedLoop, KTiledMatmulFromTosaIsBitExact) {
     for (int bByte = 0; bByte < 4; ++bByte)
       biasBytes.push_back(static_cast<uint8_t>((v >> (8 * bByte)) & 0xFF));
   }
-  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
-                  biasBytes.size());
+  writeBiasRows(simulator, loadBiases[0], biasBytes);
 
   simulator.run(*words);
 
@@ -863,7 +892,7 @@ TEST(ClosedLoop, PartialKTileZeroPadsCorrectly) {
   auto aTy = RankedTensorType::get({1, kPartialRows, kPartialK}, i8Ty);
   auto bTy = RankedTensorType::get({1, kPartialK, 14}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kPartialRows, 14}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int r = 0; r < kPartialRows; ++r)
@@ -893,7 +922,8 @@ TEST(ClosedLoop, PartialKTileZeroPadsCorrectly) {
     biasData.push_back(partialBias(c));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -982,8 +1012,7 @@ TEST(ClosedLoop, PartialKTileZeroPadsCorrectly) {
     for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
       biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
   }
-  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
-                  biasBytes.size());
+  writeBiasRows(simulator, loadBiases[0], biasBytes);
 
   simulator.run(*words);
 
@@ -1017,7 +1046,7 @@ TEST(ClosedLoop, PartialKRuntimeInputZeroInjectedByDma) {
   auto aTy = RankedTensorType::get({1, kPartialRows, kPartialK}, i8Ty);
   auto bTy = RankedTensorType::get({1, kPartialK, 14}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kPartialRows, 14}, i32Ty);
 
   // The only difference from PartialKTileZeroPadsCorrectly: a genuine
   // runtime input (block argument), not a tosa.const.
@@ -1044,7 +1073,8 @@ TEST(ClosedLoop, PartialKRuntimeInputZeroInjectedByDma) {
     biasData.push_back(partialBias(c));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -1126,8 +1156,7 @@ TEST(ClosedLoop, PartialKRuntimeInputZeroInjectedByDma) {
     for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
       biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
   }
-  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
-                  biasBytes.size());
+  writeBiasRows(simulator, loadBiases[0], biasBytes);
 
   // Tile 0: a full, real 14-wide K-slice - dense, matching what
   // Device::stageInput actually writes for a runtime input.
@@ -1208,7 +1237,7 @@ TEST(ClosedLoop, PartialNTileZeroPadsCorrectly) {
   auto aTy = RankedTensorType::get({1, kPartialNRows, 14}, i8Ty);
   auto bTy = RankedTensorType::get({1, 14, kPartialN}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, kPartialN}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kPartialNRows, kPartialN}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int r = 0; r < kPartialNRows; ++r)
@@ -1239,7 +1268,8 @@ TEST(ClosedLoop, PartialNTileZeroPadsCorrectly) {
     biasData.push_back(partialNBias(static_cast<int>(c)));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -1377,7 +1407,7 @@ TEST(ClosedLoop, NTiledMatmulFromTosaIsBitExact) {
   auto aTy = RankedTensorType::get({1, kNTileRows, 14}, i8Ty);
   auto bTy = RankedTensorType::get({1, 14, kNTileN}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, kNTileN}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kNTileRows, kNTileN}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int r = 0; r < kNTileRows; ++r)
@@ -1407,7 +1437,8 @@ TEST(ClosedLoop, NTiledMatmulFromTosaIsBitExact) {
     biasData.push_back(nTileBias(static_cast<int>(c)));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -1481,8 +1512,7 @@ TEST(ClosedLoop, NTiledMatmulFromTosaIsBitExact) {
       for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
         biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
     }
-    simulator.write(loadBiases[tile].getDdr3Addr(), biasBytes.data(),
-                    biasBytes.size());
+    writeBiasRows(simulator, loadBiases[tile], biasBytes);
   }
 
   simulator.run(*words);
@@ -1503,9 +1533,10 @@ TEST(ClosedLoop, NTiledMatmulFromTosaIsBitExact) {
 //===----------------------------------------------------------------------===//
 // 6. M-chunking + weight-hold, whole-pipeline closed loop
 //
-// rows=270 (252 + 18) - two M-chunks, K=14 single-tile so weight-hold
-// applies: only the first chunk's weight/bias is loaded, the second's
-// matmul sets weight_hold and reuses them. This is the numeric oracle for
+// rows=270 (255 + 15) - two M-chunks, K=14 single-tile and no bias, so
+// weight-hold applies: only the first chunk's weight (and the shared zero
+// bias tile) is loaded, the second's matmul sets weight_hold and reuses them.
+// A real [1, M, N] bias would differ per chunk and disable holding. This is the numeric oracle for
 // weight-stationary M-streaming - proves the held chunk's matmul actually
 // produces the right numbers using the *reused* weight/bias, not just that
 // it skips the reload instructions (test_tosa_to_macaque.cpp's
@@ -1520,7 +1551,6 @@ int8_t holdAct(int r, int k) {
   return static_cast<int8_t>((r * 7 + k) % 13 - 6);
 }
 int8_t holdWeight(int k, int c) { return static_cast<int8_t>((k - c) % 5); }
-int32_t holdBias(int c) { return c - 4; }
 constexpr uint32_t kHoldMult = 3, kHoldShift = 2;
 
 uint8_t holdRequantizePassthrough(int64_t acc, uint32_t m, uint32_t shift) {
@@ -1532,7 +1562,7 @@ uint8_t holdRequantizePassthrough(int64_t acc, uint32_t m, uint32_t shift) {
 }
 
 uint8_t holdExpected(int r, int c) {
-  int64_t acc = holdBias(c);
+  int64_t acc = 0;
   for (int k = 0; k < 14; ++k)
     acc += static_cast<int64_t>(holdAct(r, k)) *
            static_cast<int64_t>(holdWeight(k, c));
@@ -1555,7 +1585,6 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
   auto aTy = RankedTensorType::get({1, kHoldRows, 14}, i8Ty);
   auto bTy = RankedTensorType::get({1, 14, 14}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int64_t r = 0; r < kHoldRows; ++r)
@@ -1580,14 +1609,6 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
       tosa::MatMulOp::create(builder, loc, matmulOutTy, a.getResult(),
                              b.getResult(), aZp.getResult(), bZp.getResult());
 
-  std::vector<int32_t> biasData;
-  for (int c = 0; c < 14; ++c)
-    biasData.push_back(holdBias(c));
-  auto bias = tosa::ConstOp::create(
-      builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
-  auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
-                                 bias.getResult());
 
   auto multiplierConst = tosa::ConstOp::create(
       builder, loc, RankedTensorType::get({1}, i32Ty),
@@ -1597,7 +1618,7 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
       builder, loc, zpTy,
       DenseElementsAttr::get(zpTy, static_cast<int8_t>(kHoldShift)));
   auto rescaleOutTy = RankedTensorType::get({1, kHoldRows, 14}, i8Ty);
-  tosa::RescaleOp::create(builder, loc, rescaleOutTy, add.getResult(),
+  tosa::RescaleOp::create(builder, loc, rescaleOutTy, matmul.getResult(),
                           multiplierConst.getResult(), shiftConst.getResult(),
                           aZp.getResult(), aZp.getResult(),
                           /*scale32=*/true, tosa::RoundingMode::SINGLE_ROUND,
@@ -1623,7 +1644,7 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
     if (auto o = dyn_cast<StoreOp>(op))
       stores.push_back(o);
   }
-  // ceil(270/252) = 2 M-chunks; K=14 is single-tile so weight-hold applies -
+  // ceil(270/255) = 2 M-chunks; K=14 is single-tile so weight-hold applies -
   // only the first chunk reloads weight/bias.
   ASSERT_EQ(loadWeights.size(), 1u);
   ASSERT_EQ(loadBiases.size(), 1u);
@@ -1644,21 +1665,15 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
       wBytes.push_back(static_cast<uint8_t>(holdWeight(k, c)));
   simulator.write(loadWeights[0].getDdr3Addr(), wBytes.data(), wBytes.size());
 
-  std::vector<uint8_t> biasBytes;
-  for (int c = 0; c < 14; ++c) {
-    int32_t v = holdBias(c);
-    for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
-      biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
-  }
-  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
-                  biasBytes.size());
+  // No bias: the shared zero-bias tile is left as the simulator's
+  // zero-initialized DDR3.
 
-  // Chunk 0: rows 0..251 (252 rows). Chunk 1: rows 252..269 (18 rows) - each
+  // Chunk 0: rows 0..254 (255 rows). Chunk 1: rows 255..269 (15 rows) - each
   // chunk's own activation data at its own load_input address, staged
-  // separately since the row ranges differ. Weight/bias are staged only
+  // separately since the row ranges differ. The weight is staged only
   // once above - the held chunk's matmul must reuse that same DDR3 data via
   // the RTL's weight-stationary bank reuse, not a fresh load.
-  const int64_t chunkRowCounts[2] = {252, 18};
+  const int64_t chunkRowCounts[2] = {255, 15};
   int64_t rowOffset = 0;
   for (int chunk = 0; chunk < 2; ++chunk) {
     std::vector<uint8_t> aBytes;
@@ -1690,18 +1705,17 @@ TEST(ClosedLoop, MChunkedWeightHoldMatmulFromTosaIsBitExact) {
 }
 
 //===----------------------------------------------------------------------===//
-// 7. Weight-hold combined with K-tiling, whole-pipeline closed loop
+// 7. M-chunked K-tiling, whole-pipeline closed loop
 //
-// rows=30 (3 14-row hold-batch chunks: 14+14+2), K=28 (2 K-tiles) - the
-// numeric oracle for emitBatchMatmuls: proves weight reloaded once per
-// K-tile (not once per chunk) and held across chunks still produces the
-// right numbers for every chunk, at every K-tile, including the correct
-// accumulation across K-tiles via each chunk's own mat_row_base.
+// rows=260 (a 255-row M-chunk plus a 5-row one), K=28 (2 K-tiles) - the
+// numeric oracle for long K-tiled matmuls: each M-chunk is one matmul per
+// K-tile accumulating in place across K-tiles, and the second chunk correctly
+// reloads the weights from K-tile 0.
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-constexpr int64_t kHKRows = 30;
+constexpr int64_t kHKRows = 260;
 constexpr int64_t kHKK = 28;
 
 int8_t hkAct(int r, int k) { return static_cast<int8_t>((r * 3 + k) % 11 - 5); }
@@ -1727,7 +1741,7 @@ uint8_t hkExpected(int r, int c) {
 
 } // namespace
 
-TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
+TEST(ClosedLoop, MChunkedKTiledMatmulFromTosaIsBitExact) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -1741,7 +1755,7 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
   auto aTy = RankedTensorType::get({1, kHKRows, kHKK}, i8Ty);
   auto bTy = RankedTensorType::get({1, kHKK, 14}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kHKRows, 14}, i32Ty);
 
   std::vector<int8_t> aData;
   for (int64_t r = 0; r < kHKRows; ++r)
@@ -1771,7 +1785,8 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
     biasData.push_back(hkBias(c));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
-      DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
+      DenseElementsAttr::get(
+          biasTy, ArrayRef<int32_t>(repeatRows(biasData, biasTy.getShape()[1]))));
   auto add = tosa::AddOp::create(builder, loc, matmulOutTy, matmul.getResult(),
                                  bias.getResult());
 
@@ -1812,22 +1827,21 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
     if (auto o = dyn_cast<StoreOp>(op))
       stores.push_back(o);
   }
-  // 1 hold-batch (30 rows fits well under the 252-row batch capacity), 2
-  // K-tiles: weight loaded exactly once per K-tile, not once per chunk.
-  ASSERT_EQ(loadWeights.size(), 2u);
-  ASSERT_EQ(loadBiases.size(), 1u);
-  ASSERT_EQ(loadInputs.size(), 6u); // 3 chunks x 2 K-tiles
-  ASSERT_EQ(matmuls.size(), 6u);
-  ASSERT_EQ(activates.size(), 3u); // one per chunk, after the full K-tile sweep
-  ASSERT_EQ(stores.size(), 3u);
+  // 2 M-chunks x 2 K-tiles: every chunk sweeps both K-tiles, one matmul each.
+  ASSERT_EQ(loadWeights.size(), 4u);
+  ASSERT_EQ(loadBiases.size(), 2u);
+  ASSERT_EQ(loadInputs.size(), 4u);
+  ASSERT_EQ(matmuls.size(), 4u);
+  ASSERT_EQ(activates.size(), 2u); // one per chunk, after the full K-tile sweep
+  ASSERT_EQ(stores.size(), 2u);
 
   auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
 
   sim::Simulator simulator(/*ddr_bytes=*/65536);
 
-  // Weight: one tile per K-tile, staged once - reused (via weight_hold) by
-  // every chunk in that K-tile's pass, not restaged per chunk.
+  // Weight: one DDR3 tile per K-tile, staged once - both M-chunks reload
+  // from the same two addresses (loadWeights[2..3] == loadWeights[0..1]).
   for (int k = 0; k < 2; ++k) {
     std::vector<uint8_t> wBytes;
     for (int kk = 0; kk < 14; ++kk)
@@ -1842,16 +1856,16 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
     for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
       biasBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
   }
-  simulator.write(loadBiases[0].getDdr3Addr(), biasBytes.data(),
-                  biasBytes.size());
+  // Each M-chunk has its own bias tile (its own rows of the [1, M, N] bias).
+  for (LoadBiasOp load : loadBiases)
+    writeBiasRows(simulator, load, biasBytes);
 
-  // Activation: K-tile outer, chunk inner - matches emitBatchMatmuls's
-  // emission order (each K-tile's pass visits every chunk in turn).
-  const int64_t chunkRows[3] = {14, 14, 2};
+  // Activation: M-chunk outer, K-tile inner - matches the emission order.
+  const int64_t chunkRows[2] = {255, 5};
   int loadInputIdx = 0;
-  for (int k = 0; k < 2; ++k) {
-    int64_t chunkRowOffset = 0;
-    for (int c = 0; c < 3; ++c) {
+  int64_t chunkRowOffset = 0;
+  for (int c = 0; c < 2; ++c) {
+    for (int k = 0; k < 2; ++k) {
       std::vector<uint8_t> aBytes;
       for (int64_t r = 0; r < chunkRows[c]; ++r)
         for (int kk = 0; kk < 14; ++kk)
@@ -1859,15 +1873,15 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
               hkAct(static_cast<int>(chunkRowOffset + r), k * 14 + kk)));
       simulator.write(loadInputs[loadInputIdx].getDdr3Addr(), aBytes.data(),
                       aBytes.size());
-      chunkRowOffset += chunkRows[c];
       ++loadInputIdx;
     }
+    chunkRowOffset += chunkRows[c];
   }
 
   simulator.run(*words);
 
   int64_t rowOffset = 0;
-  for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 2; ++c) {
     std::vector<uint8_t> result =
         simulator.read(stores[c].getDdr3Addr(), chunkRows[c] * 14);
     ASSERT_EQ(result.size(), static_cast<size_t>(chunkRows[c] * 14));
@@ -1883,17 +1897,12 @@ TEST(ClosedLoop, WeightHoldWithKTilingFromTosaIsBitExact) {
 }
 
 //===----------------------------------------------------------------------===//
-// 8. Chained held-batch producer and consumer, whole-pipeline closed loop
+// 8. Chained K-tiled producer and consumer, whole-pipeline closed loop
 //
-// Layer 1: K=28 (2 K-tiles, held-batch producer), N=28 (2 N-tiles), rows=30
-// (3 hold-chunks: 14+14+2) - its own K needs the held-batch scheme *and* it
-// feeds layer 2. Layer 2: K=28 (matches layer 1's real N, so its own K also
-// needs the held-batch scheme), N=14, same rows=30. Exercises both newly
-// -unified code paths at once: RescaleToMacaque's numKTiles>1 branch storing
-// into one shared per-(N-tile, hold-batch) Scratch address instead of one
-// per chunk, and allocateBatchChunkInputAddrs's chained branch reading that
-// same address at computed 14-row offsets. Previously rejected outright
-// (rows=30 > 14, so both sides of the link span 3 batch-chunks, not 1).
+// Layer 1: K=28 (2 K-tiles), N=28 (2 N-tiles), rows=30 - feeds layer 2.
+// Layer 2: K=28 (layer 1's N-tiles become its K-tiles), N=14, same rows=30.
+// Each layer's 30 rows are one M-chunk, so each layer-1 N-tile is one 30-row
+// Scratch tile that layer 2 reads back whole as one of its K-tiles.
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -1942,7 +1951,7 @@ uint8_t hc2Layer2Out(int r, int c) { // c in [0, 14)
 
 } // namespace
 
-TEST(ClosedLoop, ChainedHeldBatchProducerAndConsumerIsBitExact) {
+TEST(ClosedLoop, ChainedKTiledProducerAndConsumerIsBitExact) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -1954,10 +1963,10 @@ TEST(ClosedLoop, ChainedHeldBatchProducerAndConsumerIsBitExact) {
   auto act0Const = buildChainI8Tensor(builder, loc, kHC2Rows, kHC2K1, hc2Act0);
   auto weight1Const =
       buildChainI8Tensor(builder, loc, kHC2K1, kHC2N1, hc2Weight1);
-  auto bias1Const = buildChainI32Bias(builder, loc, kHC2N1, hc2Bias1);
+  auto bias1Const = buildChainI32Bias(builder, loc, kHC2Rows, kHC2N1, hc2Bias1);
   auto weight2Const =
       buildChainI8Tensor(builder, loc, kHC2N1, kHC2N2, hc2Weight2);
-  auto bias2Const = buildChainI32Bias(builder, loc, kHC2N2, hc2Bias2);
+  auto bias2Const = buildChainI32Bias(builder, loc, kHC2Rows, kHC2N2, hc2Bias2);
 
   auto rescale1 = buildChainLayerN(
       builder, loc, act0Const.getResult(), weight1Const, bias1Const,
@@ -1983,14 +1992,17 @@ TEST(ClosedLoop, ChainedHeldBatchProducerAndConsumerIsBitExact) {
       stores.push_back(o);
   }
   // Layer 1: 2 K-tiles x 2 N-tiles = 4 weight loads, 2 bias loads (one per
-  // N-tile), 6 distinct input addresses (3 chunks x 2 K-tiles) each
-  // re-issued once per N-tile = 12 load_inputs, 6 stores (3 chunks x 2
-  // N-tiles). Layer 2: 2 K-tiles x 1 N-tile = 2 weight loads, 1 bias load,
-  // 6 chained load_inputs (3 chunks x 2 K-tiles), 3 stores (final output).
+  // N-tile), 2 distinct input addresses (one per K-tile) each re-issued once
+  // per N-tile = 4 load_inputs, 2 stores (one per N-tile). Layer 2: 2 K-tiles
+  // x 1 N-tile = 2 weight loads, 1 bias load, 2 chained load_inputs, 1 store.
   ASSERT_EQ(loadWeights.size(), 6u);
   ASSERT_EQ(loadBiases.size(), 3u);
-  ASSERT_EQ(loadInputs.size(), 18u);
-  ASSERT_EQ(stores.size(), 9u);
+  ASSERT_EQ(loadInputs.size(), 6u);
+  ASSERT_EQ(stores.size(), 3u);
+
+  // Layer 2's K-tile k reads layer 1's N-tile k store.
+  EXPECT_EQ(loadInputs[4].getDdr3Addr(), stores[0].getDdr3Addr());
+  EXPECT_EQ(loadInputs[5].getDdr3Addr(), stores[1].getDdr3Addr());
 
   auto words = target::emitBinary(block);
   ASSERT_TRUE(succeeded(words));
@@ -2019,7 +2031,7 @@ TEST(ClosedLoop, ChainedHeldBatchProducerAndConsumerIsBitExact) {
       for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
         bBytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
     }
-    simulator.write(loadBiases[n].getDdr3Addr(), bBytes.data(), bBytes.size());
+    writeBiasRows(simulator, loadBiases[n], bBytes);
   }
 
   // Layer 2's weight2: 2 K-tiles, single N-tile (14 cols each).
@@ -2039,71 +2051,42 @@ TEST(ClosedLoop, ChainedHeldBatchProducerAndConsumerIsBitExact) {
     for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
       bias2Bytes.push_back(static_cast<uint8_t>((v >> (8 * byteIdx)) & 0xFF));
   }
-  simulator.write(loadBiases[2].getDdr3Addr(), bias2Bytes.data(),
-                  bias2Bytes.size());
+  writeBiasRows(simulator, loadBiases[2], bias2Bytes);
 
-  // Layer 1's own activation: 3 held-batch chunks (14+14+2 rows) x 2
-  // K-tiles, K-tile outer/chunk inner, matching emitBatchMatmuls's
-  // emission order. Only loadInputs[0..5] (N-tile 0's pass) need staging -
-  // N-tile 1's pass (loadInputs[6..11]) re-reads the exact same addresses.
-  // Layer 2's own reads (loadInputs[12..17]) are chained - computed by the
-  // simulator from layer 1's stores during run(), nothing to stage.
-  const int64_t chunkRows[3] = {14, 14, 2};
-  int loadInputIdx = 0;
+  // Layer 1's own activation: one 30-row tile per K-tile. Only
+  // loadInputs[0..1] (N-tile 0's pass) need staging - N-tile 1's pass
+  // (loadInputs[2..3]) re-reads the same addresses, and layer 2's reads
+  // (loadInputs[4..5]) are produced by layer 1's stores during run().
   for (int k = 0; k < 2; ++k) {
-    int64_t rowOffset = 0;
-    for (int c = 0; c < 3; ++c) {
-      std::vector<uint8_t> aBytes;
-      for (int64_t r = 0; r < chunkRows[c]; ++r)
-        for (int kk = 0; kk < 14; ++kk)
-          aBytes.push_back(static_cast<uint8_t>(
-              hc2Act0(static_cast<int>(rowOffset + r), k * 14 + kk)));
-      simulator.write(loadInputs[loadInputIdx].getDdr3Addr(), aBytes.data(),
-                      aBytes.size());
-      rowOffset += chunkRows[c];
-      ++loadInputIdx;
-    }
+    std::vector<uint8_t> aBytes;
+    for (int64_t r = 0; r < kHC2Rows; ++r)
+      for (int kk = 0; kk < 14; ++kk)
+        aBytes.push_back(
+            static_cast<uint8_t>(hc2Act0(static_cast<int>(r), k * 14 + kk)));
+    simulator.write(loadInputs[k].getDdr3Addr(), aBytes.data(), aBytes.size());
   }
 
   simulator.run(*words);
 
-  // Layer 1's 2 N-tiles' worth of scratch stores, reassembled into the true
+  // Layer 1's 2 N-tiles' scratch stores, reassembled into the true
   // 28-channel intermediate result.
   for (int n = 0; n < 2; ++n) {
-    int64_t rowOffset = 0;
-    for (int c = 0; c < 3; ++c) {
-      int storeIdx = n * 3 + c;
-      std::vector<uint8_t> result =
-          simulator.read(stores[storeIdx].getDdr3Addr(), chunkRows[c] * 14);
-      ASSERT_EQ(result.size(), static_cast<size_t>(chunkRows[c] * 14));
-      for (int64_t r = 0; r < chunkRows[c]; ++r) {
-        for (int cc = 0; cc < 14; ++cc) {
-          EXPECT_EQ(result[r * 14 + cc],
-                    hc2Layer1Out(static_cast<int>(rowOffset + r), n * 14 + cc))
-              << "L1 N-tile" << n << " chunk " << c << " row " << r << " col "
-              << cc;
-        }
-      }
-      rowOffset += chunkRows[c];
-    }
+    std::vector<uint8_t> result =
+        simulator.read(stores[n].getDdr3Addr(), kHC2Rows * 14);
+    ASSERT_EQ(result.size(), static_cast<size_t>(kHC2Rows * 14));
+    for (int64_t r = 0; r < kHC2Rows; ++r)
+      for (int cc = 0; cc < 14; ++cc)
+        EXPECT_EQ(result[r * 14 + cc],
+                  hc2Layer1Out(static_cast<int>(r), n * 14 + cc))
+            << "L1 N-tile" << n << " row " << r << " col " << cc;
   }
 
-  // Layer 2's final 3 chunks.
-  {
-    int64_t rowOffset = 0;
-    for (int c = 0; c < 3; ++c) {
-      int storeIdx = 6 + c;
-      std::vector<uint8_t> result =
-          simulator.read(stores[storeIdx].getDdr3Addr(), chunkRows[c] * 14);
-      ASSERT_EQ(result.size(), static_cast<size_t>(chunkRows[c] * 14));
-      for (int64_t r = 0; r < chunkRows[c]; ++r) {
-        for (int cc = 0; cc < 14; ++cc) {
-          EXPECT_EQ(result[r * 14 + cc],
-                    hc2Layer2Out(static_cast<int>(rowOffset + r), cc))
-              << "L2 chunk " << c << " row " << r << " col " << cc;
-        }
-      }
-      rowOffset += chunkRows[c];
-    }
-  }
+  // Layer 2's final output.
+  std::vector<uint8_t> result =
+      simulator.read(stores[2].getDdr3Addr(), kHC2Rows * 14);
+  ASSERT_EQ(result.size(), static_cast<size_t>(kHC2Rows * 14));
+  for (int64_t r = 0; r < kHC2Rows; ++r)
+    for (int cc = 0; cc < 14; ++cc)
+      EXPECT_EQ(result[r * 14 + cc], hc2Layer2Out(static_cast<int>(r), cc))
+          << "L2 row " << r << " col " << cc;
 }

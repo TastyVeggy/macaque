@@ -259,8 +259,8 @@ TEST(TosaToMacaque, PartialKRuntimeInputGetsDmaZeroInjection) {
 }
 
 TEST(TosaToMacaque, OnlyThePartialKTileGetsDmaZeroInjection) {
-  // K=20 = one full 14-wide tile plus a 6-wide boundary tile (2 K-tiles,
-  // the allocateBatchChunkInputAddrs/emitBatchMatmuls path). Only the
+  // K=20 = one full 14-wide tile plus a 6-wide boundary tile (2 K-tiles).
+  // Only the
   // second (partial) K-tile's LOAD_INPUT should carry the zero-injection
   // fields - the first, fully-real tile must stay byte-for-byte identical
   // to today's padded-byte_count encoding.
@@ -474,14 +474,16 @@ TEST(TosaToMacaque, PartialNTileDataIsZeroPadded) {
   auto weightVal = [](int64_t k, int64_t n) -> int8_t {
     return static_cast<int8_t>((k + n) % 7 - 3);
   };
-  auto biasVal = [](int64_t n) -> int32_t {
-    return static_cast<int32_t>(n * 10 - 5);
+  // A real [1, M, N] addend: different in every row, so the bias tile must
+  // carry each row's own values.
+  auto biasVal = [](int64_t r, int64_t n) -> int32_t {
+    return static_cast<int32_t>(n * 10 - 5 + 1000 * r);
   };
 
   auto aTy = RankedTensorType::get({1, kRows, kK}, i8Ty);
   auto bTy = RankedTensorType::get({1, kK, kN}, i8Ty);
   auto zpTy = RankedTensorType::get({1}, i8Ty);
-  auto biasTy = RankedTensorType::get({1, 1, kN}, i32Ty);
+  auto biasTy = RankedTensorType::get({1, kRows, kN}, i32Ty);
 
   auto a = tosa::ConstOp::create(
       builder, loc, aTy, DenseElementsAttr::get(aTy, static_cast<int8_t>(1)));
@@ -503,8 +505,9 @@ TEST(TosaToMacaque, PartialNTileDataIsZeroPadded) {
                              b.getResult(), aZp.getResult(), bZp.getResult());
 
   std::vector<int32_t> biasData;
-  for (int64_t n = 0; n < kN; ++n)
-    biasData.push_back(biasVal(n));
+  for (int64_t r = 0; r < kRows; ++r)
+    for (int64_t n = 0; n < kN; ++n)
+      biasData.push_back(biasVal(r, n));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
       DenseElementsAttr::get(biasTy, ArrayRef<int32_t>(biasData)));
@@ -557,19 +560,21 @@ TEST(TosaToMacaque, PartialNTileDataIsZeroPadded) {
     }
   }
 
-  // Bias tile 1: same boundary, but int32 little-endian.
+  // Bias tile 1: same boundary, but int32 little-endian, one row per
+  // output row.
   const SmallVector<uint8_t> *bias1 = findData(loadBiases[1].getDdr3Addr());
   ASSERT_NE(bias1, nullptr);
-  ASSERT_EQ(bias1->size(), 14u * 4u);
-  for (int64_t localN = 0; localN < 14; ++localN) {
-    const int64_t n = 14 + localN;
-    const int32_t expected = n < kN ? biasVal(n) : 0;
-    int32_t got = 0;
-    for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
-      got |= static_cast<int32_t>((*bias1)[localN * 4 + byteIdx])
-             << (8 * byteIdx);
-    EXPECT_EQ(got, expected) << "localN=" << localN;
-  }
+  ASSERT_EQ(bias1->size(), kRows * 14u * 4u);
+  for (int64_t r = 0; r < kRows; ++r)
+    for (int64_t localN = 0; localN < 14; ++localN) {
+      const int64_t n = 14 + localN;
+      const int32_t expected = n < kN ? biasVal(r, n) : 0;
+      int32_t got = 0;
+      for (int byteIdx = 0; byteIdx < 4; ++byteIdx)
+        got |= static_cast<int32_t>((*bias1)[(r * 14 + localN) * 4 + byteIdx])
+               << (8 * byteIdx);
+      EXPECT_EQ(got, expected) << "r=" << r << " localN=" << localN;
+    }
 }
 
 TEST(TosaToMacaque, NTilesRescaleIntoTwoIndependentGroups) {
@@ -586,7 +591,7 @@ TEST(TosaToMacaque, NTilesRescaleIntoTwoIndependentGroups) {
   // K-tiling, N-tiles don't accumulate into each other.
   tosa::MatMulOp matmul =
       buildConstMatmulKN(builder, loc, /*rows=*/2, /*k=*/14, /*n=*/28);
-  auto biasTy = RankedTensorType::get({1, 1, 28}, builder.getIntegerType(32));
+  auto biasTy = RankedTensorType::get({1, 2, 28}, builder.getIntegerType(32));
   auto bias = tosa::ConstOp::create(builder, loc, biasTy,
                                     DenseElementsAttr::get(biasTy, 7));
   auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
@@ -785,9 +790,8 @@ TEST(TosaToMacaque, MChunksMatmulIntoTwoHeldGroups) {
   Block block;
   builder.setInsertionPointToStart(&block);
 
-  // rows=300 = one 252-row chunk plus a 48-row boundary chunk. 252 (not
-  // tile_params' full 255-row encoding range) is the real per-instruction
-  // cap
+  // rows=300 = one 255-row chunk (tile_params' 8-bit maximum) plus a 45-row
+  // boundary chunk
   tosa::MatMulOp matmul =
       buildConstMatmulK(builder, loc, /*rows=*/300, /*k=*/14);
   buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
@@ -810,23 +814,23 @@ TEST(TosaToMacaque, MChunksMatmulIntoTwoHeldGroups) {
       matmuls.push_back(o);
   }
 
-  // ceil(300/252) = 2 M-chunks, but only the first gets a real load_weight/
+  // ceil(300/255) = 2 M-chunks, but only the first gets a real load_weight/
   // load_bias - the second's matmul sets weight_hold instead.
   ASSERT_EQ(loadWeights.size(), 1u);
   ASSERT_EQ(loadBiases.size(), 1u);
   ASSERT_EQ(loadInputs.size(), 2u);
   ASSERT_EQ(matmuls.size(), 2u);
 
-  EXPECT_EQ(matmuls[0].getTileParams(), 252u);
-  EXPECT_EQ(matmuls[1].getTileParams(), 48u);
+  EXPECT_EQ(matmuls[0].getTileParams(), 255u);
+  EXPECT_EQ(matmuls[1].getTileParams(), 45u);
   EXPECT_EQ(matmuls[0].getWeightHold(), false);
   EXPECT_EQ(matmuls[1].getWeightHold(), true);
-  EXPECT_EQ(loadInputs[0].getByteCount(), 252u * 14u);
-  EXPECT_EQ(loadInputs[1].getByteCount(), 48u * 14u);
+  EXPECT_EQ(loadInputs[0].getByteCount(), 255u * 14u);
+  EXPECT_EQ(loadInputs[1].getByteCount(), 45u * 14u);
   EXPECT_NE(loadInputs[0].getDdr3Addr(), loadInputs[1].getDdr3Addr());
 }
 
-TEST(TosaToMacaque, WeightHoldCombinedWithKTilingIntoHeldBatch) {
+TEST(TosaToMacaque, KTiledMChunkStreamsAllRowsPerKTile) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -835,11 +839,10 @@ TEST(TosaToMacaque, WeightHoldCombinedWithKTilingIntoHeldBatch) {
   Block block;
   builder.setInsertionPointToStart(&block);
 
-  // rows=30 (3 14-row hold-batch chunks: 14+14+2) x K=28 (2 K-tiles): weight
-  // is reloaded once per K-tile (not per chunk) and held across every chunk
-  // after the first in that K-tile's pass - each chunk's partial sum stays
-  // resident in out_buffer at its own mat_row_base across the whole K-tile
-  // sweep.
+  // rows=30 x K=28 (2 K-tiles): M is streamed through the array, not tiled
+  // by 14, so each K-tile is ONE matmul carrying all 30 rows. Weight is loaded
+  // once per K-tile and the 30 partial-sum rows accumulate in place in
+  // out_buffer rows 0..29 across both K-tiles.
   tosa::MatMulOp matmul =
       buildConstMatmulK(builder, loc, /*rows=*/30, /*k=*/28);
   buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
@@ -848,46 +851,50 @@ TEST(TosaToMacaque, WeightHoldCombinedWithKTilingIntoHeldBatch) {
   ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
 
   SmallVector<LoadWeightOp> loadWeights;
+  SmallVector<LoadBiasOp> loadBiases;
+  SmallVector<LoadInputOp> loadInputs;
   SmallVector<MatmulOp> matmuls;
+  SmallVector<ActivateOp> activates;
+  SmallVector<StoreOp> stores;
   for (Operation &op : block) {
     if (auto o = dyn_cast<LoadWeightOp>(op))
       loadWeights.push_back(o);
+    if (auto o = dyn_cast<LoadBiasOp>(op))
+      loadBiases.push_back(o);
+    if (auto o = dyn_cast<LoadInputOp>(op))
+      loadInputs.push_back(o);
     if (auto o = dyn_cast<MatmulOp>(op))
       matmuls.push_back(o);
+    if (auto o = dyn_cast<ActivateOp>(op))
+      activates.push_back(o);
+    if (auto o = dyn_cast<StoreOp>(op))
+      stores.push_back(o);
   }
 
-  // One hold-batch (30 rows fits well within the 252-row batch capacity),
-  // so weight is loaded exactly once per K-tile - not once per chunk.
   ASSERT_EQ(loadWeights.size(), 2u);
-  // numKTiles(2) x numChunks(3) = 6 matmuls: 3 chunks per K-tile pass.
-  ASSERT_EQ(matmuls.size(), 6u);
+  ASSERT_EQ(loadBiases.size(), 1u);
+  ASSERT_EQ(loadInputs.size(), 2u);
+  ASSERT_EQ(matmuls.size(), 2u);
+  ASSERT_EQ(activates.size(), 1u);
+  ASSERT_EQ(stores.size(), 1u);
 
-  // K-tile 0's pass: chunk 0 real (unheld), chunks 1-2 held.
-  EXPECT_EQ(matmuls[0].getWeightHold(), false);
-  EXPECT_EQ(matmuls[1].getWeightHold(), true);
-  EXPECT_EQ(matmuls[2].getWeightHold(), true);
-  // K-tile 1's pass: same pattern - its own fresh load, then held.
-  EXPECT_EQ(matmuls[3].getWeightHold(), false);
-  EXPECT_EQ(matmuls[4].getWeightHold(), true);
-  EXPECT_EQ(matmuls[5].getWeightHold(), true);
+  for (size_t k = 0; k < matmuls.size(); ++k) {
+    EXPECT_EQ(matmuls[k].getTileParams(), 30u) << "k=" << k;
+    EXPECT_EQ(matmuls[k].getAccMode(), k > 0) << "k=" << k;
+    EXPECT_FALSE(matmuls[k].getWeightHold()) << "k=" << k;
+    EXPECT_EQ(matmuls[k].getMatRowBase(), 0u) << "k=" << k;
+    EXPECT_EQ(loadInputs[k].getByteCount(), 30u * 14u) << "k=" << k;
+  }
+  EXPECT_NE(loadInputs[0].getDdr3Addr(), loadInputs[1].getDdr3Addr());
 
-  // Each chunk's mat_row_base is local to the batch: 0, 14, 28 - the same
-  // for both K-tile passes (chunk 1 always lands at row 14 in out_buffer,
-  // regardless of which K-tile is currently accumulating into it).
-  EXPECT_EQ(matmuls[0].getMatRowBase(), 0u);
-  EXPECT_EQ(matmuls[1].getMatRowBase(), 14u);
-  EXPECT_EQ(matmuls[2].getMatRowBase(), 28u);
-  EXPECT_EQ(matmuls[3].getMatRowBase(), 0u);
-  EXPECT_EQ(matmuls[4].getMatRowBase(), 14u);
-  EXPECT_EQ(matmuls[5].getMatRowBase(), 28u);
-
-  // Row counts: 14, 14, 2 (30 = 14+14+2) per K-tile pass.
-  EXPECT_EQ(matmuls[0].getTileParams(), 14u);
-  EXPECT_EQ(matmuls[1].getTileParams(), 14u);
-  EXPECT_EQ(matmuls[2].getTileParams(), 2u);
+  // One drain for the whole chunk, after the last K-tile.
+  EXPECT_EQ(activates[0].getActNumRows(), 30u);
+  EXPECT_EQ(activates[0].getActRowBase(), 0u);
+  EXPECT_FALSE(activates[0].getActBankHold());
+  EXPECT_EQ(stores[0].getByteCount(), 30u * 14u);
 }
 
-TEST(TosaToMacaque, WeightHoldWithKTilingSpansMultipleHoldBatches) {
+TEST(TosaToMacaque, KTiledMatmulReloadsWeightsPerMChunk) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -896,10 +903,9 @@ TEST(TosaToMacaque, WeightHoldWithKTilingSpansMultipleHoldBatches) {
   Block block;
   builder.setInsertionPointToStart(&block);
 
-  // rows=260: one full hold-batch (252 rows = 18 chunks of 14) plus an
-  // 8-row second batch (1 chunk) - the on-chip out_buffer (256 rows) can't
-  // hold more than 252 rows' worth of 14-row chunks at once, so weight
-  // reloads once more at the second batch's start.
+  // rows=260 = a 255-row M-chunk plus a 5-row one, K=28 (2 K-tiles). Each
+  // chunk sweeps every K-tile, so the buffer ends on K-tile 1 and the next
+  // chunk must reload from K-tile 0: 2 chunks x 2 K-tiles = 4 weight loads.
   tosa::MatMulOp matmul =
       buildConstMatmulK(builder, loc, /*rows=*/260, /*k=*/28);
   buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
@@ -908,34 +914,41 @@ TEST(TosaToMacaque, WeightHoldWithKTilingSpansMultipleHoldBatches) {
   ASSERT_TRUE(succeeded(lowerTosaToMacaque(block)));
 
   SmallVector<LoadWeightOp> loadWeights;
+  SmallVector<LoadBiasOp> loadBiases;
   SmallVector<MatmulOp> matmuls;
+  SmallVector<ActivateOp> activates;
   for (Operation &op : block) {
     if (auto o = dyn_cast<LoadWeightOp>(op))
       loadWeights.push_back(o);
+    if (auto o = dyn_cast<LoadBiasOp>(op))
+      loadBiases.push_back(o);
     if (auto o = dyn_cast<MatmulOp>(op))
       matmuls.push_back(o);
+    if (auto o = dyn_cast<ActivateOp>(op))
+      activates.push_back(o);
   }
 
-  // 2 hold-batches x 2 K-tiles = 4 weight loads (vs. 2 without batching, or
-  // 19 x 2 = 38 without holding at all).
   ASSERT_EQ(loadWeights.size(), 4u);
-  // batch0: 18 chunks x 2 K-tiles = 36. batch1: 1 chunk x 2 K-tiles = 2.
-  ASSERT_EQ(matmuls.size(), 38u);
+  ASSERT_EQ(loadBiases.size(), 2u);
+  ASSERT_EQ(matmuls.size(), 4u);
+  ASSERT_EQ(activates.size(), 2u);
 
-  // First chunk of each batch's each K-tile pass is unheld (fresh load);
-  // batch0 has 18 chunks per K-tile pass, batch1 has 1.
-  EXPECT_EQ(matmuls[0].getWeightHold(), false);  // batch0, K-tile0, chunk0
-  EXPECT_EQ(matmuls[17].getWeightHold(), true);  // batch0, K-tile0, chunk17
-  EXPECT_EQ(matmuls[18].getWeightHold(), false); // batch0, K-tile1, chunk0
-  EXPECT_EQ(matmuls[36].getWeightHold(), false); // batch1, K-tile0, chunk0
-  EXPECT_EQ(matmuls[36].getMatRowBase(),
-            0u); // batch1 restarts its own row_base at 0
-  EXPECT_EQ(matmuls[36].getTileParams(),
-            8u); // batch1's only chunk: 260-252=8 rows
-  EXPECT_EQ(matmuls[37].getWeightHold(), false); // batch1, K-tile1, chunk0
+  // Chunk 0 (255 rows): K-tile 0 then 1. Chunk 1 (5 rows): same.
+  const unsigned rows[4] = {255, 255, 5, 5};
+  const bool acc[4] = {false, true, false, true};
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(matmuls[i].getTileParams(), rows[i]) << "i=" << i;
+    EXPECT_EQ(matmuls[i].getAccMode(), acc[i]) << "i=" << i;
+    EXPECT_FALSE(matmuls[i].getWeightHold()) << "i=" << i;
+  }
+  // Both chunks reuse the same two DDR3 weight tiles.
+  EXPECT_EQ(loadWeights[0].getDdr3Addr(), loadWeights[2].getDdr3Addr());
+  EXPECT_EQ(loadWeights[1].getDdr3Addr(), loadWeights[3].getDdr3Addr());
+  EXPECT_EQ(activates[0].getActNumRows(), 255u);
+  EXPECT_EQ(activates[1].getActNumRows(), 5u);
 }
 
-TEST(TosaToMacaque, HeldBatchKTilingLoopsOverNTilesThroughRescale) {
+TEST(TosaToMacaque, KTiledMatmulLoopsOverNTilesThroughRescale) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -944,8 +957,7 @@ TEST(TosaToMacaque, HeldBatchKTilingLoopsOverNTilesThroughRescale) {
   Block block;
   builder.setInsertionPointToStart(&block);
 
-  // K=28 (2 K-tiles, so the held-batch branch fires) x N=28 (2 N-tiles),
-  // rows=2 (single M-hold-chunk).
+  // K=28 (2 K-tiles) x N=28 (2 N-tiles), rows=2 (single M-chunk).
   tosa::MatMulOp matmul =
       buildConstMatmulKN(builder, loc, /*rows=*/2, /*k=*/28, /*n=*/28);
   buildRescale(builder, loc, matmul.getResult(), builder.getIntegerType(8),
@@ -1033,10 +1045,10 @@ TEST(TosaToMacaque, MChunksRescaleIntoTwoHeldGroupsWithSeparateStores) {
 
   EXPECT_EQ(matmuls[0].getWeightHold(), false);
   EXPECT_EQ(matmuls[1].getWeightHold(), true);
-  EXPECT_EQ(activates[0].getActNumRows(), 252u);
-  EXPECT_EQ(activates[1].getActNumRows(), 48u);
-  EXPECT_EQ(stores[0].getByteCount(), 252u * 14u);
-  EXPECT_EQ(stores[1].getByteCount(), 48u * 14u);
+  EXPECT_EQ(activates[0].getActNumRows(), 255u);
+  EXPECT_EQ(activates[1].getActNumRows(), 45u);
+  EXPECT_EQ(stores[0].getByteCount(), 255u * 14u);
+  EXPECT_EQ(stores[1].getByteCount(), 45u * 14u);
   EXPECT_NE(stores[0].getDdr3Addr(), stores[1].getDdr3Addr());
 }
 
@@ -1090,7 +1102,7 @@ TEST(TosaToMacaque, MChunkedIntermediateFeedsMChunkedConsumer) {
   EXPECT_NE(stores[0].getDdr3Addr(), stores[1].getDdr3Addr());
 }
 
-TEST(TosaToMacaque, HeldBatchProducerSharesOneScratchAddressPerBatch) {
+TEST(TosaToMacaque, KTiledProducerFeedsConsumerThroughOneScratchTile) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
   context.getOrLoadDialect<tosa::TosaDialect>();
@@ -1099,9 +1111,9 @@ TEST(TosaToMacaque, HeldBatchProducerSharesOneScratchAddressPerBatch) {
   Block block;
   builder.setInsertionPointToStart(&block);
 
-  // Layer 1: K=28 (2 K-tiles, own K needs the held-batch scheme), N=14
-  // (single tile), rows=30 (3 hold-chunks: 14+14+2) - feeds layer 2 (K=14,
-  // matching layer 1's N, so a plain flat consumer).
+  // Layer 1: K=28 (2 K-tiles), N=14, rows=30 - one M-chunk, so its result is
+  // one 30-row Scratch tile. Layer 2 (K=14) reads that whole tile with a
+  // single load_input.
   tosa::MatMulOp matmul1 =
       buildConstMatmulK(builder, loc, /*rows=*/30, /*k=*/28);
   tosa::RescaleOp rescale1 =
@@ -1122,22 +1134,14 @@ TEST(TosaToMacaque, HeldBatchProducerSharesOneScratchAddressPerBatch) {
     if (auto o = dyn_cast<StoreOp>(op))
       stores.push_back(o);
   }
-  // Layer 1: 3 hold-chunks x 2 K-tiles = 6 own load_inputs, 3 stores (one
-  // per chunk, sharing one batch's base address at computed offsets).
-  // Layer 2: 1 load_input (single K-tile, chained, reading that same base),
-  // plus its own real output store.
-  ASSERT_EQ(loadInputs.size(), 7u);
-  ASSERT_EQ(stores.size(), 4u);
+  // Layer 1: one load_input per K-tile, one store (into Scratch).
+  // Layer 2: one chained load_input, one real output store.
+  ASSERT_EQ(loadInputs.size(), 3u);
+  ASSERT_EQ(stores.size(), 2u);
 
-  // The 3 chunks' stores land at offsets 0, 14*14, 28*14 bytes (row_base
-  // 0/14/28, 14 columns, 1 byte/element) from one shared base address
-  const uint32_t base = stores[0].getDdr3Addr();
-  EXPECT_EQ(stores[1].getDdr3Addr(), base + 14u * 14u);
-  EXPECT_EQ(stores[2].getDdr3Addr(), base + 28u * 14u);
-
-  // Layer 2's chained read (the last load_input) reads that exact base
-  // address
-  EXPECT_EQ(loadInputs.back().getDdr3Addr(), base);
+  EXPECT_EQ(stores[0].getByteCount(), 30u * 14u);
+  EXPECT_EQ(loadInputs.back().getDdr3Addr(), stores[0].getDdr3Addr());
+  EXPECT_EQ(loadInputs.back().getByteCount(), 30u * 14u);
 }
 
 TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
@@ -1186,7 +1190,8 @@ TEST(TosaToMacaque, LowersMatmulRescaleToActivateWithoutBias) {
   //  No TOSA-level bias, but load_bias must still be emitted, pointing at the
   //  shared zero-bias slot.
   ASSERT_TRUE(loadBias);
-  EXPECT_EQ(loadBias.getByteCount(), 14u * sizeof(int32_t));
+  // The shared zero-bias tile: one zero row per output row.
+  EXPECT_EQ(loadBias.getByteCount(), 2u * 14u * sizeof(int32_t));
 
   EXPECT_EQ(activate.getActScaleM(), 12345u);
   EXPECT_EQ(activate.getActScaleShift(), 9u);
@@ -1239,6 +1244,30 @@ TEST(TosaToMacaque, MultiplierAboveSeventeenBitMaxFailsToConvert) {
   EXPECT_TRUE(failed(lowerTosaToMacaque(block)));
 }
 
+// The hardware adds bias row r to activation row r and the compiler doesn't
+// broadcast, so a [1, 1, N] bias on a 2-row matmul is rejected rather than
+// silently applied to row 0 only.
+TEST(TosaToMacaque, BroadcastBiasFailsToConvert) {
+  MLIRContext context;
+  context.getOrLoadDialect<MacaqueDialect>();
+  context.getOrLoadDialect<tosa::TosaDialect>();
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Block block;
+  builder.setInsertionPointToStart(&block);
+
+  tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
+  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  auto bias = tosa::ConstOp::create(builder, loc, biasTy,
+                                    DenseElementsAttr::get(biasTy, 7));
+  auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
+                                 matmul.getResult(), bias.getResult());
+  buildRescale(builder, loc, add.getResult(), builder.getIntegerType(8),
+               /*multiplier=*/1, /*shift=*/0);
+
+  EXPECT_TRUE(failed(lowerTosaToMacaque(block)));
+}
+
 TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   MLIRContext context;
   context.getOrLoadDialect<MacaqueDialect>();
@@ -1249,9 +1278,8 @@ TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   builder.setInsertionPointToStart(&block);
 
   tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
-  // Bias: one INT32 value per output channel, broadcast across rows -
-  // [1, 1, 14], matching load_bias's one-row convention.
-  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  // Bias shaped like the matmul output, [1, M, N]: one INT32 row per row.
+  auto biasTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
   auto bias = tosa::ConstOp::create(builder, loc, biasTy,
                                     DenseElementsAttr::get(biasTy, 7));
   auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
@@ -1283,7 +1311,7 @@ TEST(TosaToMacaque, LowersMatmulAddRescaleToActivateWithBias) {
   ASSERT_TRUE(matmulOp);
   ASSERT_TRUE(activate);
   ASSERT_TRUE(store);
-  EXPECT_EQ(loadBias.getByteCount(), 14u * sizeof(int32_t));
+  EXPECT_EQ(loadBias.getByteCount(), 2u * 14u * sizeof(int32_t));
   EXPECT_EQ(store.getByteCount(), 2u * 14u);
 }
 
@@ -1298,7 +1326,7 @@ TEST(TosaToMacaque, DdrRegionsFollowIntendedLayout) {
   builder.setInsertionPointToStart(&block);
 
   tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  auto biasTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
   auto bias = tosa::ConstOp::create(builder, loc, biasTy,
                                     DenseElementsAttr::get(biasTy, 7));
   auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
@@ -1327,10 +1355,12 @@ TEST(TosaToMacaque, DdrRegionsFollowIntendedLayout) {
   ASSERT_TRUE(loadInput);
   ASSERT_TRUE(store);
 
+  // weight(196 -> 200) at 0x1000, bias (2 rows x 56 = 112) at 0x10C8, then
+  // input (28 -> 32), then output.
   EXPECT_EQ(loadWeight.getDdr3Addr(), 0x1000u);
   EXPECT_EQ(loadBias.getDdr3Addr(), 4296u);
-  EXPECT_EQ(loadInput.getDdr3Addr(), 4352u);
-  EXPECT_EQ(store.getDdr3Addr(), 4384u);
+  EXPECT_EQ(loadInput.getDdr3Addr(), 4408u);
+  EXPECT_EQ(store.getDdr3Addr(), 4440u);
 }
 
 TEST(TosaToMacaque, ChainsRescaleOutputIntoNextMatmulViaScratch) {
@@ -1403,14 +1433,14 @@ TEST(TosaToMacaque, ChainsRescaleOutputIntoNextMatmulViaScratch) {
   EXPECT_NE(loadInputs[0].getDdr3Addr(), loadInputs[1].getDdr3Addr());
 
   // Exact region math: weight(196, 8-byte-aligned to 200)x2 -> bias(0, no
-  // real bias) -> zero-bias(56, shared by both no-bias layers) -> input(28,
-  // aligned to 32, layer 1 only) -> scratch A(28) -> scratch B(28) ->
-  // output(28).
-  EXPECT_EQ(loadInputs[0].getDdr3Addr(), 4552u); // layer 1: fresh Input slot
-  EXPECT_EQ(stores[0].getDdr3Addr(), 4584u);     // layer 1: Scratch A
+  // real bias) -> zero-bias(2 rows x 56 = 112, shared by both no-bias
+  // layers) -> input(28, aligned to 32, layer 1 only) -> scratch A(28) ->
+  // scratch B(28) -> output(28).
+  EXPECT_EQ(loadInputs[0].getDdr3Addr(), 4608u); // layer 1: fresh Input slot
+  EXPECT_EQ(stores[0].getDdr3Addr(), 4640u);     // layer 1: Scratch A
   EXPECT_EQ(loadInputs[1].getDdr3Addr(),
-            4584u);                          // layer 2: chained from Scratch A
-  EXPECT_EQ(stores[1].getDdr3Addr(), 4648u); // layer 2: Output
+            4640u);                          // layer 2: chained from Scratch A
+  EXPECT_EQ(stores[1].getDdr3Addr(), 4704u); // layer 2: Output
 }
 
 TEST(TosaToMacaque, SyncBarrierEmittedBetweenChainedLayers) {
@@ -1617,11 +1647,11 @@ TEST(TosaToMacaque, ZeroBiasIsNotFoldedAway) {
   builder.setInsertionPointToStart(&block);
 
   tosa::MatMulOp matmul = buildConstMatmul(builder, loc, /*rows=*/2);
-  auto biasTy = RankedTensorType::get({1, 1, 14}, builder.getIntegerType(32));
+  auto biasTy = RankedTensorType::get({1, 2, 14}, builder.getIntegerType(32));
   auto bias = tosa::ConstOp::create(
       builder, loc, biasTy,
       DenseElementsAttr::get(biasTy,
-                             ArrayRef<int32_t>(std::vector<int32_t>(14, 0))));
+                             ArrayRef<int32_t>(std::vector<int32_t>(2 * 14, 0))));
   auto add = tosa::AddOp::create(builder, loc, matmul.getType(),
                                  matmul.getResult(), bias.getResult());
   buildRescale(builder, loc, add.getResult(), builder.getIntegerType(8),
@@ -1641,7 +1671,7 @@ TEST(TosaToMacaque, ZeroBiasIsNotFoldedAway) {
     if (addr == loadBiases[0].getDdr3Addr())
       biasBytes = &bytes;
   ASSERT_NE(biasBytes, nullptr);
-  ASSERT_EQ(biasBytes->size(), 14u * 4u);
+  ASSERT_EQ(biasBytes->size(), 2u * 14u * 4u);
   for (uint8_t b : *biasBytes)
     EXPECT_EQ(b, 0u);
 }

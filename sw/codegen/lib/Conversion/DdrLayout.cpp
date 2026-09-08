@@ -22,47 +22,27 @@ int64_t numNTilesFor(tosa::MatMulOp matmul) {
   return numTilesFor(bType.getShape()[2]);
 }
 
-int64_t numKTilesFor(tosa::MatMulOp matmul) {
-  auto bConst = matmul.getB().getDefiningOp<tosa::ConstOp>();
-  if (!bConst)
-    return 1;
-  auto bType = cast<RankedTensorType>(bConst.getType());
-  if (bType.getRank() != 3)
-    return 1;
-  return numTilesFor(bType.getShape()[1]);
-}
-
-// Total DDR3 bytes needed for `numChunks` M-chunks (each up to
-// kMaxFlatChunkRows rows, the last one whatever remains) of a `fullRows`-row,
-// 14-column, `elemBytes`-per-element tensor. This is the sum of each
-// individual chunk's own aligned size, not one aligned block for the whole
-// tensor.
-uint32_t flatChunkedRowBytes(int64_t fullRows, int64_t numChunks,
-                             int64_t elemBytes) {
+// Total DDR3 bytes for one 14-column slice of a `fullRows`-row,
+// `elemBytes`-per-element tensor, split into M-chunks (each up to
+// kMaxMChunkRows rows). This is the sum of each chunk's own aligned size, not
+// one aligned block for the whole tensor, because each chunk is its own tile.
+uint32_t mChunkedRowBytes(int64_t fullRows, int64_t elemBytes) {
   uint32_t total = 0;
-  for (int64_t m = 0; m < numChunks; m++) {
-    const int64_t rows = numChunks > 1 ? flatChunkRows(fullRows, m) : fullRows;
-    total += alignUp(static_cast<uint32_t>(rows * kTileWidth) *
+  for (int64_t m = 0; m < numMChunksFor(fullRows); m++)
+    total += alignUp(static_cast<uint32_t>(mChunkRows(fullRows, m) * kTileWidth) *
                      static_cast<uint32_t>(elemBytes));
-  }
   return total;
 }
 
-// Same as flatChunkedRowBytes, but for weight-hold+K-tiling's 14-row
-// hold-batch chunks (kBatchChunkRows, batched by kMaxChunksPerBatch).
-uint32_t batchChunkedRowBytes(int64_t fullRows, int64_t elemBytes) {
-  uint32_t total = 0;
-  const int64_t numBatches = numBatchesFor(fullRows);
-  for (int64_t b = 0; b < numBatches; b++) {
-    const int64_t batchRows = rowsPerBatch(fullRows, b);
-    const int64_t numChunks = numTilesFor(batchRows);
-    for (int64_t c = 0; c < numChunks; c++) {
-      const int64_t rows = batchChunkRows(batchRows, c);
-      total += alignUp(static_cast<uint32_t>(rows * kTileWidth) *
-                       static_cast<uint32_t>(elemBytes));
-    }
-  }
-  return total;
+// Bytes of the shared zero-bias tile a bias-less matmul with `rows` rows
+// needs: one 14-lane INT32 row per row of its largest M-chunk.
+uint32_t zeroBiasTileBytes(int64_t rows) {
+  return alignUp(static_cast<uint32_t>(std::min(rows, kMaxMChunkRows)) *
+                 kBiasTileBytes);
+}
+
+int64_t rowsOf(RankedTensorType type) {
+  return type.getRank() == 3 ? type.getShape()[1] : 1;
 }
 
 } // namespace
@@ -84,17 +64,16 @@ DdrRegionTotals sizeRegions(Block &block) {
               aType.getRank() == 3) {
             const int64_t rows = aType.getShape()[1];
             const int64_t elemBytes = aType.getElementTypeBitWidth() / 8;
-            const uint32_t perKTileBytes =
-                numK == 1 ? flatChunkedRowBytes(rows, numFlatChunksFor(rows),
-                                                elemBytes)
-                          : batchChunkedRowBytes(rows, elemBytes);
-            totals.inputBytes += static_cast<uint32_t>(numK) * perKTileBytes;
+            totals.inputBytes += static_cast<uint32_t>(numK) *
+                                 mChunkedRowBytes(rows, elemBytes);
           }
           // A bare (non-rescaled) matmul never has a bias so it always
           // needs the zero-bias slot
           if (!feedsRescale(matmul))
-            totals.maxZeroBiasBytes =
-                std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
+            totals.maxZeroBiasBytes = std::max(
+                totals.maxZeroBiasBytes,
+                zeroBiasTileBytes(
+                    rowsOf(cast<RankedTensorType>(matmul.getType()))));
         }
       }
     } else if (auto rescale = dyn_cast<tosa::RescaleOp>(op)) {
@@ -102,21 +81,17 @@ DdrRegionTotals sizeRegions(Block &block) {
 
       std::optional<MatmulChain> chain = matchMatmulChain(rescale.getInput());
       const int64_t numN = chain ? numNTilesFor(chain->matmul) : 1;
-      const int64_t numK = chain ? numKTilesFor(chain->matmul) : 1;
 
       if (feedsMatmul(rescale)) {
         // Intermediate (chained) outputs get one Scratch slot per (N-tile,
-        // M-chunk) and always the flat mChunkedRowBytes shape, regardless of
-        // numK: a held-batch (numK>1) producer's Scratch output is one
-        // address per hold-batch now. Scratch A/B is sized to
-        // the *largest single* producer's full tiled shape
+        // M-chunk). Scratch A/B is sized to the *largest single* producer's
+        // full tiled shape
         uint32_t producerBytes;
         if (outType.getRank() == 3) {
           const int64_t rows = outType.getShape()[1];
           const int64_t elemBytes = outType.getElementTypeBitWidth() / 8;
           producerBytes =
-              static_cast<uint32_t>(numN) *
-              flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes);
+              static_cast<uint32_t>(numN) * mChunkedRowBytes(rows, elemBytes);
         } else {
           producerBytes = alignUp(byteSizeOf(outType));
         }
@@ -128,23 +103,23 @@ DdrRegionTotals sizeRegions(Block &block) {
         if (outType.getRank() == 3) {
           const int64_t rows = outType.getShape()[1];
           const int64_t elemBytes = outType.getElementTypeBitWidth() / 8;
-          perNTileBytes =
-              numK == 1
-                  ? flatChunkedRowBytes(rows, numFlatChunksFor(rows), elemBytes)
-                  : batchChunkedRowBytes(rows, elemBytes);
+          perNTileBytes = mChunkedRowBytes(rows, elemBytes);
         } else {
           perNTileBytes = alignUp(byteSizeOf(outType));
         }
         totals.outputBytes += static_cast<uint32_t>(numN) * perNTileBytes;
       }
 
+      // One bias tile per (N-tile, M-chunk), one row per output row
       if (chain) {
+        const int64_t rows = rowsOf(outType);
         if (chain->biasConst) {
           totals.biasesBytes +=
-              static_cast<uint32_t>(numN) * alignUp(kBiasTileBytes);
+              static_cast<uint32_t>(numN) *
+              mChunkedRowBytes(rows, static_cast<int64_t>(sizeof(int32_t)));
         } else if (chain->matmul.getB().getDefiningOp<tosa::ConstOp>()) {
           totals.maxZeroBiasBytes =
-              std::max(totals.maxZeroBiasBytes, kBiasTileBytes);
+              std::max(totals.maxZeroBiasBytes, zeroBiasTileBytes(rows));
         }
       }
     }
@@ -154,17 +129,17 @@ DdrRegionTotals sizeRegions(Block &block) {
 
 SmallVector<SmallVector<uint32_t>>
 DdrLayout::allocateScratch(int64_t numNTiles, int64_t rows,
-                           int64_t numFlatChunks, int64_t elemBytes) {
+                           int64_t elemBytes) {
   uint32_t cursor = next_is_a_ ? scratch_a_base_ : scratch_b_base_;
   next_is_a_ = !next_is_a_;
+  const int64_t numMChunks = numMChunksFor(rows);
   SmallVector<SmallVector<uint32_t>> addrs(numNTiles);
   for (int64_t n = 0; n < numNTiles; ++n) {
-    addrs[n].reserve(numFlatChunks);
-    for (int64_t m = 0; m < numFlatChunks; ++m) {
+    addrs[n].reserve(numMChunks);
+    for (int64_t m = 0; m < numMChunks; ++m) {
       addrs[n].push_back(cursor);
-      const int64_t chunkRows =
-          numFlatChunks > 1 ? flatChunkRows(rows, m) : rows;
-      cursor = alignUp(cursor + static_cast<uint32_t>(chunkRows * kTileWidth) *
+      cursor = alignUp(cursor + static_cast<uint32_t>(mChunkRows(rows, m) *
+                                                      kTileWidth) *
                                     static_cast<uint32_t>(elemBytes));
     }
   }

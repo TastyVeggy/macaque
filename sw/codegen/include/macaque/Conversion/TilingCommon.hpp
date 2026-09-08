@@ -27,41 +27,19 @@ inline int64_t numTilesFor(int64_t dim) {
   return (dim + kTileWidth - 1) / kTileWidth;
 }
 
-inline constexpr int64_t kBatchChunkRows = kTileWidth;
-inline constexpr int64_t kMaxChunksPerBatch =
-    macaque_defs::kMaxHoldBatchRows / kBatchChunkRows;
-inline constexpr int64_t kMaxBatchRows = macaque_defs::kMaxHoldBatchRows;
+// how many rows the output buffer can hold
+inline constexpr int64_t kMaxMChunkRows = macaque_defs::kMaxMChunkRows;
+static_assert(kMaxMChunkRows <= (1 << 8) - 1,
+              "kMaxMChunkRows must fit the ISA's 8-bit row-count byte");
 
-// Just makes everything so much more convenient
-inline constexpr int64_t kMaxFlatChunkRows = kMaxBatchRows;
-static_assert(
-    kMaxFlatChunkRows <= (1 << 8) - 1,
-    "kMaxFlatChunkRows must still fit the ISA's 8-bit row-count byte");
-
-inline int64_t numFlatChunksFor(int64_t rows) {
-  return (rows + kMaxFlatChunkRows - 1) / kMaxFlatChunkRows;
+inline int64_t numMChunksFor(int64_t rows) {
+  return (rows + kMaxMChunkRows - 1) / kMaxMChunkRows;
 }
 
 // Row count of M-chunk `chunkIdx` of a matmul with `rows` total activation
 // rows
-inline int64_t flatChunkRows(int64_t rows, int64_t chunkIdx) {
-  return std::min(kMaxFlatChunkRows, rows - chunkIdx * kMaxFlatChunkRows);
-}
-
-inline int64_t numBatchesFor(int64_t rows) {
-  return (rows + kMaxBatchRows - 1) / kMaxBatchRows;
-}
-
-// Row count of hold-batch `batchIdx` of a matmul with `rows` total
-// activation rows
-inline int64_t rowsPerBatch(int64_t rows, int64_t batchIdx) {
-  return std::min(kMaxBatchRows, rows - batchIdx * kMaxBatchRows);
-}
-
-// Row count of chunk `chunkIdx` within one hold-batch of `batchRows` total
-// rows
-inline int64_t batchChunkRows(int64_t batchRows, int64_t chunkIdx) {
-  return std::min(kBatchChunkRows, batchRows - chunkIdx * kBatchChunkRows);
+inline int64_t mChunkRows(int64_t rows, int64_t chunkIdx) {
+  return std::min(kMaxMChunkRows, rows - chunkIdx * kMaxMChunkRows);
 }
 
 inline uint32_t weightTileBytes(mlir::RankedTensorType bType) {

@@ -68,6 +68,10 @@ def make_tiles(total, size=ARRAY):
     return tiles
 
 
+def tile_stride(nbytes):
+    return max(200, (nbytes + 7) & ~7)
+
+
 def build(
     A,
     W,
@@ -75,6 +79,7 @@ def build(
     bias_base=BIAS_BASE,
     act_base=ACT_BASE,
     out_base=OUT_BASE,
+    m_tile=ARRAY,
 ):
     """Return (instrs, ddr, out).
 
@@ -85,13 +90,17 @@ def build(
     The *_base params default to the module constants; a test can override
     one to place a tile at a specific address (e.g. straddling a 4KB AXI
     burst boundary).
+
+    m_tile is the number of activation rows per MATMUL (M is streamed through
+    the array, so it is bounded by buffer depth / the 8-bit row count, not by
+    ARRAY).
     """
     M = len(A)
     K = len(W)
     N = len(W[0])
     O = ref_matmul(A, W)
 
-    M_tiles = make_tiles(M)
+    M_tiles = make_tiles(M, m_tile)
     K_tiles = make_tiles(K)
     N_tiles = make_tiles(N)
 
@@ -135,7 +144,7 @@ def build(
                     rows.append(s8(A[mo + mm][k]) if k < K else 0)
             act_tile_addr[(mi, ki)] = aaddr
             ddr.append((aaddr, rows))
-            aaddr += 200
+            aaddr += tile_stride(len(rows))
 
     # ---- instruction stream + expected output ----
     oaddr = out_base
@@ -185,7 +194,7 @@ def build(
                     n = no + nn
                     exp.append(O[m][n] if n < N else 0)
             out.append((oaddr, exp))
-            oaddr += 200
+            oaddr += tile_stride(len(exp))
 
     return instrs, ddr, out
 

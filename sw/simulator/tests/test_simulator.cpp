@@ -115,7 +115,7 @@ TEST(Engine, LoadMatmulActivateStore) {
 
 TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
   const uint32_t kWeightAddr = 0x100;
-  const uint32_t kBiasAddr = 0x200;
+  const uint32_t kBiasAddr = 0x600;
   const uint32_t kActAddr = 0x300;
   const uint32_t kOutAddr = 0x400;
   const uint32_t kByteCount = kArraySize * kArraySize;
@@ -126,13 +126,15 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
 
   std::vector<uint8_t> acts(kByteCount, 1);
 
-  std::vector<uint8_t> biases(14 * 4, 0);
-  for (int c = 0; c < kArraySize; ++c) {
-    const int32_t b = 1000;
-    const uint8_t *p = reinterpret_cast<const uint8_t *>(&b); // little-endian
-    for (size_t j = 0; j < sizeof(int32_t); ++j)
-      biases[c * 4 + j] = p[j];
-  }
+  auto rowBias = [](int r) { return static_cast<int32_t>(1000 + 10 * r); };
+  std::vector<uint8_t> biases(kArraySize * 14 * 4, 0);
+  for (int r = 0; r < kArraySize; ++r)
+    for (int c = 0; c < kArraySize; ++c) {
+      const int32_t b = rowBias(r);
+      const uint8_t *p = reinterpret_cast<const uint8_t *>(&b); // little-endian
+      for (size_t j = 0; j < sizeof(int32_t); ++j)
+        biases[(r * kArraySize + c) * 4 + j] = p[j];
+    }
 
   const uint32_t kM = 8192;
   const uint16_t kShift = 13;
@@ -144,7 +146,8 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
 
   const Instruction load_w{Opcode::LoadWeight, kWeightAddr,
                            static_cast<uint16_t>(kByteCount)};
-  const Instruction load_b{Opcode::LoadBias, kBiasAddr, 14 * 4};
+  const Instruction load_b{Opcode::LoadBias, kBiasAddr,
+                           static_cast<uint16_t>(biases.size())};
   const Instruction load_a{Opcode::LoadInput, kActAddr,
                            static_cast<uint16_t>(kByteCount)};
   const uint64_t mm =
@@ -166,7 +169,7 @@ TEST(Engine, BiasAddedOnceInMatmulNotActivate) {
   for (int r = 0; r < kArraySize; ++r) {
     for (int c = 0; c < kArraySize; ++c) {
       const int8_t expected =
-          requantizeAndActivate(1000 + 1, kM, kShift, ActFunc::Relu);
+          requantizeAndActivate(rowBias(r) + 1, kM, kShift, ActFunc::Relu);
       EXPECT_EQ(static_cast<int8_t>(got[r * kArraySize + c]), expected)
           << "row " << r << " col " << c;
     }

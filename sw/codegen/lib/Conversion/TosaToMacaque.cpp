@@ -98,7 +98,7 @@ struct MatmulOperands {
   int64_t rows;
   int64_t numKTiles;
   int64_t numNTiles;
-  int64_t numFlatChunks;
+  int64_t numMChunks;
 };
 
 FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
@@ -133,19 +133,19 @@ FailureOr<MatmulOperands> matchMatmulOperands(tosa::MatMulOp matmul,
 
   const int64_t numKTiles = numTilesFor(bType.getShape()[1]);
   const int64_t numNTiles = numTilesFor(bType.getShape()[2]);
-  const int64_t numFlatChunks = numFlatChunksFor(aType.getShape()[1]);
+  const int64_t numMChunks = numMChunksFor(aType.getShape()[1]);
 
   return MatmulOperands{
-      a,         bConst,    aType,        bType, aType.getShape()[1],
-      numKTiles, numNTiles, numFlatChunks};
+      a,         bConst,    aType,      bType, aType.getShape()[1],
+      numKTiles, numNTiles, numMChunks};
 }
 
-// K-tile input addresses are shared across every N-tile but each
-// M-chunk gets its own set (different row data), so this returns
-// addrs[mChunk][kTile]. For a chained activation, `intermediateAddr` holds
-// the producer's own addrs[nTile][mChunk] which is then to be consumed by
-// next consumer but transposed
-SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
+// Input tile addresses, addrs[mChunk][kTile]. They are shared across every
+// N-tile, since the activation doesn't depend on which output-channel tile is
+// being computed. For a chained activation, `intermediateAddr` holds the
+// producer's own addrs[nTile][mChunk], which is transposed: the producer's
+// N-tile k is this layer's K-tile k
+SmallVector<SmallVector<uint32_t>> allocateInputAddrs(
     const MatmulOperands &operands, DdrLayout &layout,
     const DenseMap<Value, SmallVector<SmallVector<uint32_t>>> &intermediateAddr,
     bool &isRuntimeInput) {
@@ -153,9 +153,8 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
   auto chained = intermediateAddr.find(operands.a);
   if (chained != intermediateAddr.end()) {
     const auto &producerAddrs = chained->second; // [nTile][mChunk]
-    SmallVector<SmallVector<uint32_t>> addrs(operands.numFlatChunks);
-    // transpose
-    for (int64_t m = 0; m < operands.numFlatChunks; m++) {
+    SmallVector<SmallVector<uint32_t>> addrs(operands.numMChunks);
+    for (int64_t m = 0; m < operands.numMChunks; m++) {
       addrs[m].reserve(operands.numKTiles);
       for (int64_t k = 0; k < operands.numKTiles; k++)
         addrs[m].push_back(producerAddrs[k][m]);
@@ -174,9 +173,9 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
   const int64_t actElemBytes = operands.aType.getElementTypeBitWidth() / 8;
 
   SmallVector<SmallVector<uint32_t>> addrs;
-  addrs.reserve(operands.numFlatChunks);
-  for (int64_t m = 0; m < operands.numFlatChunks; ++m) {
-    const int64_t chunkRows = flatChunkRows(operands.rows, m);
+  addrs.reserve(operands.numMChunks);
+  for (int64_t m = 0; m < operands.numMChunks; ++m) {
+    const int64_t chunkRows = mChunkRows(operands.rows, m);
     const uint32_t tileBytes = activationTileBytes(operands.aType, chunkRows);
     SmallVector<uint32_t> kAddrs;
     kAddrs.reserve(operands.numKTiles);
@@ -185,7 +184,7 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
       if (aConst) {
         layout.recordData(
             addr, extractTileBytes(actValues, operands.rows, fullK,
-                                   /*rowBase=*/m * kMaxFlatChunkRows,
+                                   /*rowBase=*/m * kMaxMChunkRows,
                                    /*colBase=*/k * kTileWidth, chunkRows,
                                    kTileWidth, actElemBytes));
       } else {
@@ -199,203 +198,37 @@ SmallVector<SmallVector<uint32_t>> allocateFlatChunkInputAddrs(
   return addrs;
 }
 
-// Emits the first M-chunk's load_weight+load_input+matmul for a single
-// N-tile which is the only chunk in the group that actually loads weight.
-void emitFlatFreshChunkMatmul(const MatmulOperands &operands, int64_t nTile,
-                              int64_t chunkRows, uint32_t inputAddr,
-                              bool isRuntimeInput, DdrLayout &layout,
-                              Location loc,
-                              ConversionPatternRewriter &rewriter) {
-  const uint32_t weightBytes = weightTileBytes(operands.bType);
-  const uint32_t weightAddr = layout.allocateWeight(weightBytes);
-  LoadWeightOp::create(rewriter, loc, TypeRange{}, weightAddr,
-                       static_cast<uint16_t>(weightBytes));
-
-  // numKTiles == 1 here so there's a single K-tile spanning
-  // all of K, padded to 14 rows.
-  const SmallVector<int64_t> weightValues = flattenConstValues(operands.bConst);
-  const int64_t fullK = operands.bType.getShape()[1];
-  const int64_t fullN = operands.bType.getShape()[2];
-  const int64_t weightElemBytes = operands.bType.getElementTypeBitWidth() / 8;
-  layout.recordData(weightAddr,
-                    extractTileBytes(weightValues, fullK, fullN, /*rowBase=*/0,
-                                     /*colBase=*/nTile * kTileWidth, kTileWidth,
-                                     kTileWidth, weightElemBytes));
-
-  const int64_t fullActK = operands.aType.getShape()[2];
-  const InputLoadSizing sizing = computeInputLoadSizing(
-      operands.aType, fullActK, /*kOffset=*/0, chunkRows, isRuntimeInput);
-  LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
-                      static_cast<uint16_t>(sizing.byteCount),
-                      sizing.validBytesPerRow, sizing.inputRows);
-
-  MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
-                   static_cast<uint16_t>(chunkRows));
-}
-
-// Emits every M-chunk after the group's first: no load_weight/load_bias.
-void emitFlatHeldChunkMatmul(const MatmulOperands &operands, int64_t chunkRows,
-                             uint32_t inputAddr, bool isRuntimeInput,
-                             Location loc,
-                             ConversionPatternRewriter &rewriter) {
-  const int64_t fullActK = operands.aType.getShape()[2];
-  const InputLoadSizing sizing = computeInputLoadSizing(
-      operands.aType, fullActK, /*kOffset=*/0, chunkRows, isRuntimeInput);
-  LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddr,
-                      static_cast<uint16_t>(sizing.byteCount),
-                      sizing.validBytesPerRow, sizing.inputRows);
-  MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/false,
-                   static_cast<uint16_t>(chunkRows), /*weight_hold=*/true);
-}
-
 uint32_t allocateBiasAddr(tosa::ConstOp biasConst, int64_t nTile,
+                          int64_t mChunk, int64_t chunkRows,
                           DdrLayout &layout) {
-  if (!biasConst) {
-    const uint32_t addr = layout.zeroBiasAddr();
-    layout.recordData(addr, SmallVector<uint8_t>(kBiasTileBytes, 0));
-    return addr;
-  }
-  const uint32_t addr = layout.allocateBias(kBiasTileBytes);
+  const uint32_t tileBytes =
+      static_cast<uint32_t>(chunkRows) * kBiasTileBytes;
+  if (!biasConst)
+    return layout.zeroBiasAddr();
+  const uint32_t addr = layout.allocateBias(tileBytes);
   const SmallVector<int64_t> biasValues = flattenConstValues(biasConst);
-  const int64_t fullN =
-      cast<RankedTensorType>(biasConst.getType()).getShape()[2];
+  auto biasType = cast<RankedTensorType>(biasConst.getType());
   layout.recordData(
-      addr, extractTileBytes(biasValues, /*fullRows=*/1, fullN, /*rowBase=*/0,
-                             /*colBase=*/nTile * kTileWidth, /*rowTileSize=*/1,
+      addr, extractTileBytes(biasValues, /*fullRows=*/biasType.getShape()[1],
+                             /*fullCols=*/biasType.getShape()[2],
+                             /*rowBase=*/mChunk * kMaxMChunkRows,
+                             /*colBase=*/nTile * kTileWidth, chunkRows,
                              kTileWidth, /*elemBytes=*/sizeof(int32_t)));
   return addr;
 }
 
-void emitBiasLoad(uint32_t addr, Location loc,
+void emitBiasLoad(uint32_t addr, int64_t chunkRows, Location loc,
                   ConversionPatternRewriter &rewriter) {
-  LoadBiasOp::create(rewriter, loc, TypeRange{}, addr,
-                     static_cast<uint16_t>(kBiasTileBytes));
+  LoadBiasOp::create(
+      rewriter, loc, TypeRange{}, addr,
+      static_cast<uint16_t>(static_cast<uint32_t>(chunkRows) * kBiasTileBytes));
 }
 
-void emitBias(tosa::ConstOp biasConst, int64_t nTile, DdrLayout &layout,
-              Location loc, ConversionPatternRewriter &rewriter) {
-  emitBiasLoad(allocateBiasAddr(biasConst, nTile, layout), loc, rewriter);
-}
-
-// Held-batch activation addresses for weight-hold combined with K-tiling:
-// addrs[globalChunkIdx][kTile], where chunks are numbered across *all*
-// hold-batches. For a chained activation, `intermediateAddr` holds the
-// producer's own addrs[nTile][mChunk] and since the producer's flat M-chunks
-// and this consumer's hold-batches share identical boundaries, producer
-// chunk `b` is this consumer's hold-batch `b`. Each hold-chunk `c` within
-// that batch is then just a 14-row byte-offset slice into that one shared
-// address
-SmallVector<SmallVector<uint32_t>> allocateBatchChunkInputAddrs(
-    const MatmulOperands &operands, DdrLayout &layout,
-    const DenseMap<Value, SmallVector<SmallVector<uint32_t>>> &intermediateAddr,
-    bool &isRuntimeInput) {
-  auto chained = intermediateAddr.find(operands.a);
-  const int64_t elemBytes = operands.aType.getElementTypeBitWidth() / 8;
-
-  // aConst is pretty much just for testing. Activation input
-  // should almost always be supplied by the runtime or result from a previous
-  // layer
-  auto aConst = operands.a.getDefiningOp<tosa::ConstOp>();
-  isRuntimeInput = !aConst && chained == intermediateAddr.end();
-  const SmallVector<int64_t> actValues =
-      aConst ? flattenConstValues(aConst) : SmallVector<int64_t>{};
-  const int64_t fullK = operands.aType.getShape()[2];
-
-  SmallVector<SmallVector<uint32_t>> addrs;
-  const int64_t numBatches = numBatchesFor(operands.rows);
-  for (int64_t b = 0; b < numBatches; b++) {
-    const int64_t batchRows = rowsPerBatch(operands.rows, b);
-    const int64_t numChunks = numTilesFor(batchRows);
-    for (int64_t c = 0; c < numChunks; c++) {
-      SmallVector<uint32_t> kAddrs;
-      kAddrs.reserve(operands.numKTiles);
-      if (chained != intermediateAddr.end()) {
-        const uint32_t chunkOffsetBytes =
-            static_cast<uint32_t>(c * kBatchChunkRows * kTileWidth * elemBytes);
-        for (int64_t k = 0; k < operands.numKTiles; k++)
-          kAddrs.push_back(chained->second[k][b] + chunkOffsetBytes);
-      } else {
-        const int64_t chunkRows = batchChunkRows(batchRows, c);
-        const uint32_t tileBytes =
-            activationTileBytes(operands.aType, chunkRows);
-        for (int64_t k = 0; k < operands.numKTiles; k++) {
-          const uint32_t addr = layout.allocateInput(tileBytes);
-          if (aConst) {
-            layout.recordData(
-                addr, extractTileBytes(actValues, operands.rows, fullK,
-                                       /*rowBase=*/b * kMaxBatchRows +
-                                           c * kBatchChunkRows,
-                                       /*colBase=*/k * kTileWidth, chunkRows,
-                                       kTileWidth, elemBytes));
-          } else {
-            layout.recordInputTile(addr, tileBytes);
-            layout.setInputValidBytes(fullK * elemBytes);
-          }
-          kAddrs.push_back(addr);
-        }
-      }
-      addrs.push_back(std::move(kAddrs));
-    }
-  }
-  return addrs;
-}
-
-// One hold-batch's row_base/row-count, for the caller to drain (ACTIVATE +
-// STORE) after emitBatchMatmuls returns.
-struct BatchChunk {
-  int64_t rowBase; // local to this batch/bank: 0, 14, 28, ...
-  int64_t rows;
-};
-
-// Emits one hold-batch's matmul groups for a single N-tile: K-tile outer, chunk
-// inner
-SmallVector<BatchChunk>
-emitBatchMatmuls(const MatmulOperands &operands, int64_t batchRows,
-                 ArrayRef<uint32_t> weightAddrs, uint32_t biasAddr,
-                 ArrayRef<SmallVector<uint32_t>> batchChunkAddrs,
-                 bool isRuntimeInput, Location loc,
-                 ConversionPatternRewriter &rewriter) {
-  const int64_t numChunks = numTilesFor(batchRows);
-  const uint32_t weightBytes = weightTileBytes(operands.bType);
-  const int64_t fullK = operands.aType.getShape()[2];
-
-  SmallVector<BatchChunk> chunks;
-  chunks.reserve(numChunks);
-  for (int64_t c = 0; c < numChunks; c++)
-    chunks.push_back({c * kBatchChunkRows, batchChunkRows(batchRows, c)});
-
-  for (int64_t k = 0; k < operands.numKTiles; k++) {
-    for (int64_t c = 0; c < numChunks; c++) {
-      const bool held = c > 0;
-      if (!held) {
-        LoadWeightOp::create(rewriter, loc, TypeRange{}, weightAddrs[k],
-                             static_cast<uint16_t>(weightBytes));
-        if (k == 0)
-          emitBiasLoad(biasAddr, loc, rewriter);
-      }
-      const InputLoadSizing sizing =
-          computeInputLoadSizing(operands.aType, fullK, k * kTileWidth,
-                                 chunks[c].rows, isRuntimeInput);
-      LoadInputOp::create(rewriter, loc, TypeRange{}, batchChunkAddrs[c][k],
-                          static_cast<uint16_t>(sizing.byteCount),
-                          sizing.validBytesPerRow, sizing.inputRows);
-      MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/k > 0,
-                       static_cast<uint16_t>(chunks[c].rows),
-                       /*weight_hold=*/held,
-                       static_cast<uint8_t>(chunks[c].rowBase));
-    }
-  }
-  return chunks;
-}
-
-// Weight is identical across every hold-batch (same K-tile, same N-tile
-// data regardless of which M rows are being processed) so allocate once per
-// K-tile here. Due to the design limitations of the dep tracker in the npu, a
-// new batch MUST reload the weight again. But do it via emitBatchMatmuls rather
-// than here
-SmallVector<uint32_t>
-allocateBatchKTileWeightAddrs(const MatmulOperands &operands, int64_t nTile,
-                              DdrLayout &layout) {
+// One DDR3 weight tile per K-tile for this N-tile. The tiles are the same for
+// every M-chunk, so they are allocated once here and only reloaded from
+SmallVector<uint32_t> allocateKTileWeightAddrs(const MatmulOperands &operands,
+                                               int64_t nTile,
+                                               DdrLayout &layout) {
   const uint32_t weightBytes = weightTileBytes(operands.bType);
   const SmallVector<int64_t> weightValues = flattenConstValues(operands.bConst);
   const int64_t fullK = operands.bType.getShape()[1];
@@ -476,6 +309,19 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
     if (failed(operands))
       return failure();
 
+    // Bias must be shaped like matmul output. Eventually when batching supported
+    // then can think about how to broadcast bias in a loop or something but for
+    // now just take it as it is, then if the dimensions don't match throw error
+    if (chain->biasConst) {
+      auto biasType = cast<RankedTensorType>(chain->biasConst.getType());
+      if (biasType.getRank() != 3 || biasType.getShape()[0] != 1 ||
+          biasType.getShape()[1] != operands->rows ||
+          biasType.getShape()[2] != operands->bType.getShape()[2])
+        return rewriter.notifyMatchFailure(
+            op, "bias must have the matmul output's shape [1, M, N] - "
+                "broadcasting a bias over rows isn't supported");
+    }
+
     std::optional<tosa::ClampOp> reluClamp = matchReluClamp(op);
     // TODO: Leaky relu support
     const macaque_isa::ActFunc actFunc =
@@ -489,113 +335,58 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
     auto outType = cast<RankedTensorType>(op.getOutput().getType());
     const uint32_t elemBytes = outType.getElementTypeBitWidth() / 8;
 
-    if (operands->numKTiles > 1) {
-      // Input is shared across every N-tile (activation doesn't depend on
-      // which output-channel tile is being computed), so it's allocated
-      // once, outside the N-tile loop
-      bool isRuntimeInput = false;
-      SmallVector<SmallVector<uint32_t>> chunkAddrs =
-          allocateBatchChunkInputAddrs(*operands, layout, intermediateAddr,
-                                       isRuntimeInput);
-
-      // One Scratch slot per (N-tile, hold-batch)
-      SmallVector<SmallVector<uint32_t>> scratchAddrs;
-      if (isIntermediate)
-        scratchAddrs =
-            layout.allocateScratch(operands->numNTiles, operands->rows,
-                                   numFlatChunksFor(operands->rows), elemBytes);
-
-      for (int64_t n = 0; n < operands->numNTiles; n++) {
-        // Weight-hold combined with K-tiling: each hold-batch's chunks are
-        // drained (ACTIVATE+STORE) right after that batch's matmul sweep -
-        // bank_hold skips out_bank_sel's toggle on every chunk but the
-        // batch's last, so all of a batch's chunks read back from the same
-        // bank.
-        SmallVector<uint32_t> weightAddrs =
-            allocateBatchKTileWeightAddrs(*operands, n, layout);
-        const uint32_t biasAddr = allocateBiasAddr(chain->biasConst, n, layout);
-        const int64_t numBatches = numBatchesFor(operands->rows);
-        int64_t chunkOffset = 0;
-        for (int64_t b = 0; b < numBatches; b++) {
-          const int64_t batchRows = rowsPerBatch(operands->rows, b);
-          const int64_t numChunks = numTilesFor(batchRows);
-          SmallVector<BatchChunk> chunks = emitBatchMatmuls(
-              *operands, batchRows, weightAddrs, biasAddr,
-              ArrayRef(chunkAddrs).slice(chunkOffset, numChunks),
-              isRuntimeInput, loc, rewriter);
-          chunkOffset += numChunks;
-
-          for (int64_t c = 0; c < numChunks; c++) {
-            const bool last = c == numChunks - 1;
-            ActivateOp::create(
-                rewriter, loc, TypeRange{},
-                /*act_func=*/static_cast<uint8_t>(actFunc),
-                static_cast<uint32_t>(*multiplier),
-                static_cast<uint8_t>(*shift),
-                static_cast<uint8_t>(chunks[c].rows),
-                /*act_row_base=*/static_cast<uint8_t>(chunks[c].rowBase),
-                /*act_bank_hold=*/!last);
-
-            const uint32_t outputTileBytes =
-                static_cast<uint32_t>(chunks[c].rows * kTileWidth) * elemBytes;
-            uint32_t outputAddr;
-            if (isIntermediate) {
-              outputAddr =
-                  scratchAddrs[n][b] +
-                  static_cast<uint32_t>(chunks[c].rowBase * kTileWidth) *
-                      elemBytes;
-            } else {
-              outputAddr = layout.allocateOutput(outputTileBytes);
-              layout.recordOutputTile(outputAddr, outputTileBytes);
-              layout.setOutputValidBytes(outType.getShape()[2] * elemBytes);
-            }
-            StoreOp::create(rewriter, loc, TypeRange{}, outputAddr,
-                            static_cast<uint16_t>(outputTileBytes));
-          }
-        }
-      }
-      if (isIntermediate) {
-        intermediateAddr[logicalOutput] = std::move(scratchAddrs);
-        SyncOp::create(rewriter, loc, TypeRange{});
-      }
-
-      if (reluClamp)
-        rewriter.eraseOp(*reluClamp);
-      rewriter.eraseOp(op);
-      if (chain->biasAdd)
-        rewriter.eraseOp(chain->biasAdd);
-      rewriter.eraseOp(chain->matmul);
-      return success();
-    }
-
-    // numKTiles == 1 case
-
+    // Input tiles are shared across every N-tile, so allocate them once
     bool isRuntimeInput = false;
-    SmallVector<SmallVector<uint32_t>> kTileInputAddrs =
-        allocateFlatChunkInputAddrs(*operands, layout, intermediateAddr,
-                                    isRuntimeInput);
+    SmallVector<SmallVector<uint32_t>> inputAddrs =
+        allocateInputAddrs(*operands, layout, intermediateAddr, isRuntimeInput);
 
-    // Scratch A/B's addresses for this producer, allocated up front
+    // One Scratch slot per (N-tile, M-chunk)
     SmallVector<SmallVector<uint32_t>> scratchAddrs;
     if (isIntermediate)
-      scratchAddrs = layout.allocateScratch(operands->numNTiles, operands->rows,
-                                            operands->numFlatChunks, elemBytes);
+      scratchAddrs =
+          layout.allocateScratch(operands->numNTiles, operands->rows, elemBytes);
 
+    const int64_t fullK = operands->aType.getShape()[2];
+    const uint32_t weightBytes = weightTileBytes(operands->bType);
+
+    // N-tile, then M-chunk, then K-tile innermost: an M-chunk's rows stream
+    // through the array once per K-tile, accumulating in place in out_buffer
+    // (acc_mode), and the chunk is drained (ACTIVATE + STORE) once after its
+    // last K-tile
     for (int64_t n = 0; n < operands->numNTiles; n++) {
-      for (int64_t m = 0; m < operands->numFlatChunks; m++) {
-        const int64_t chunkRows = flatChunkRows(operands->rows, m);
-        // Weight-hold means every M-chunk but the first reuses the
-        // weight/bias bank the first one loaded
-        if (m == 0) {
-          // Bias must be loaded before each (N-tile, M-chunk)'s first
-          // matmul runs.
-          emitBias(chain->biasConst, n, layout, loc, rewriter);
-          emitFlatFreshChunkMatmul(*operands, n, chunkRows,
-                                   kTileInputAddrs[m][0], isRuntimeInput,
-                                   layout, loc, rewriter);
-        } else {
-          emitFlatHeldChunkMatmul(*operands, chunkRows, kTileInputAddrs[m][0],
-                                  isRuntimeInput, loc, rewriter);
+      SmallVector<uint32_t> weightAddrs =
+          allocateKTileWeightAddrs(*operands, n, layout);
+
+      for (int64_t m = 0; m < operands->numMChunks; m++) {
+        const int64_t chunkRows = mChunkRows(operands->rows, m);
+        const uint32_t biasAddr =
+            allocateBiasAddr(chain->biasConst, n, m, chunkRows, layout);
+        // With a single K-tile, the weight the first M-chunk loaded is still
+        // in the buffer and still the right one, so later chunks hold it
+        // (weight-stationary). Holding also keeps the bias bank, so it only
+        // applies when every chunk's bias rows are the same zeros. With
+        // several K-tiles the buffer ends on the last K-tile, so every chunk
+        // reloads from K-tile 0
+        const bool held =
+            operands->numKTiles == 1 && m > 0 && !chain->biasConst;
+
+        for (int64_t k = 0; k < operands->numKTiles; k++) {
+          if (!held) {
+            LoadWeightOp::create(rewriter, loc, TypeRange{}, weightAddrs[k],
+                                 static_cast<uint16_t>(weightBytes));
+            // The bias seeds the accumulator, so only K-tile 0 needs it
+            if (k == 0)
+              emitBiasLoad(biasAddr, chunkRows, loc, rewriter);
+          }
+          const InputLoadSizing sizing =
+              computeInputLoadSizing(operands->aType, fullK, k * kTileWidth,
+                                     chunkRows, isRuntimeInput);
+          LoadInputOp::create(rewriter, loc, TypeRange{}, inputAddrs[m][k],
+                              static_cast<uint16_t>(sizing.byteCount),
+                              sizing.validBytesPerRow, sizing.inputRows);
+          MatmulOp::create(rewriter, loc, TypeRange{}, /*acc_mode=*/k > 0,
+                           static_cast<uint16_t>(chunkRows),
+                           /*weight_hold=*/held);
         }
 
         ActivateOp::create(rewriter, loc, TypeRange{},
@@ -604,13 +395,11 @@ struct RescaleToMacaque : public OpConversionPattern<tosa::RescaleOp> {
                            static_cast<uint8_t>(*shift),
                            static_cast<uint8_t>(chunkRows));
 
-        // One full 14-wide output tile per (N-tile, M-chunk)
-        const uint32_t outputTileBytes =
-            static_cast<uint32_t>(chunkRows * kTileWidth) * elemBytes;
-
         // Write this chunk's requantized INT8 result back to DDR3: Scratch
         // A/B if a downstream matmul consumes it (intermediate, layer-to-
         // layer), Output region if final.
+        const uint32_t outputTileBytes =
+            static_cast<uint32_t>(chunkRows * kTileWidth) * elemBytes;
         uint32_t outputAddr;
         if (isIntermediate) {
           outputAddr = scratchAddrs[n][m];

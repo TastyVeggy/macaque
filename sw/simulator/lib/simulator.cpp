@@ -68,16 +68,19 @@ void Simulator::execute(uint64_t word) {
   }
   case Opcode::LoadBias: {
     const Instruction ins = Instruction::decode(word);
+    // One 14-lane INT32 row per 56 bytes; MATMUL seeds activation row r from
+    // bias row r.
     const size_t lanes = ins.byte_count / sizeof(int32_t);
-    const size_t n = std::min(lanes, static_cast<size_t>(kArraySize));
-    for (size_t c = 0; c < n; ++c) {
+    const auto width = static_cast<size_t>(kArraySize);
+    for (size_t i = 0; i < lanes && i / width < static_cast<size_t>(kBramDepth);
+         ++i) {
       int32_t v = 0;
       // INT32 little-endian
       for (size_t b = 0; b < sizeof(int32_t); ++b) {
-        v |= static_cast<int32_t>(mem_[ins.ddr3_addr + c * sizeof(int32_t) + b])
+        v |= static_cast<int32_t>(mem_[ins.ddr3_addr + i * sizeof(int32_t) + b])
              << static_cast<int>(8 * b);
       }
-      bias_[0][c] = v;
+      bias_[i / width][i % width] = v;
     }
     break;
   }
@@ -91,7 +94,7 @@ void Simulator::execute(uint64_t word) {
     }
     for (size_t r = 0; r < m; ++r) {
       for (size_t c = 0; c < static_cast<size_t>(kArraySize); ++c) {
-        int32_t acc = ins.acc_mode ? out_[rowBase + r][c] : bias_[0][c];
+        int32_t acc = ins.acc_mode ? out_[rowBase + r][c] : bias_[r][c];
         for (size_t k = 0; k < static_cast<size_t>(kArraySize); ++k) {
           acc += static_cast<int32_t>(act_[r][k]) *
                  static_cast<int32_t>(weight_[k][c]);

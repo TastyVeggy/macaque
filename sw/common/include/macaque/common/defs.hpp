@@ -6,7 +6,8 @@ namespace macaque::common {
 constexpr int kArraySize = 14;
 constexpr int kBramDepth = 256;
 
-constexpr int kMaxHoldBatchRows = (kBramDepth / kArraySize) * kArraySize;
+constexpr int kMaxMChunkRows = 255;
+static_assert(kMaxMChunkRows <= kBramDepth);
 
 constexpr int kClkFreqHz = 50'000'000;
 constexpr int kBaudRate = 115'200;
